@@ -1,12 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import DraggableFlatList from "react-native-draggable-flatlist";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -85,6 +86,10 @@ import {
 } from "./src/notification-workflows";
 import { presentPreviewPush, requestMifPushPermission } from "./src/push";
 import { getProductSaveError, saveProduct } from "./src/product-workflows";
+import {
+  getPreviousPage,
+  recordPageTransition,
+} from "./src/navigation-workflows";
 import { loadMifData, saveMifData } from "./src/storage";
 import {
   addToCart,
@@ -233,6 +238,8 @@ export default function App() {
 
 function MifApp() {
   const insets = useSafeAreaInsets();
+  const pageRef = useRef<Page>("home");
+  const pageHistoryRef = useRef<Page[]>([]);
   const [data, setData] = useState<MifData>(emptyMifData);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartFeedback, setCartFeedback] = useState<{
@@ -240,7 +247,7 @@ function MifApp() {
     quantity: number;
     amount: number;
   } | null>(null);
-  const [page, setPage] = useState<Page>("home");
+  const [page, setCurrentPage] = useState<Page>("home");
   const [ready, setReady] = useState(false);
   const [sheet, setSheet] = useState<Sheet>(null);
   const [editingProduct, setEditingProduct] = useState<Product | undefined>();
@@ -266,6 +273,49 @@ function MifApp() {
     "푸시 알림은 실제 Android/iOS 앱에서 권한을 허용하면 활성화됩니다.",
   );
 
+  const setPage = (next: Page) => {
+    pageRef.current = next;
+    setCurrentPage(next);
+  };
+
+  const goToPage = (next: Page) => {
+    pageHistoryRef.current = recordPageTransition(
+      pageHistoryRef.current,
+      pageRef.current,
+      next,
+    );
+    setPage(next);
+  };
+
+  const goHome = () => {
+    setSheet(null);
+    setCartFeedback(null);
+    pageHistoryRef.current = [];
+    setPage("home");
+  };
+
+  const goBack = () => {
+    if (cartFeedback) {
+      setCartFeedback(null);
+      return;
+    }
+    if (sheet) {
+      setSheet(null);
+      return;
+    }
+    const previous = getPreviousPage(pageHistoryRef.current, "home" as Page);
+    pageHistoryRef.current = previous.history;
+    setPage(previous.page);
+  };
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      goBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [cartFeedback, page, sheet]);
+
   useEffect(() => {
     loadMifData().then((saved) => {
       setData(saved);
@@ -284,7 +334,7 @@ function MifApp() {
     setCart([]);
     setSession(null);
     setPreviewRole("customer");
-    setPage("home");
+    goHome();
     Alert.alert(
       "미리보기 테스트 준비",
       "운영 데이터와 분리된 테스트 전용 상품·배송지·계좌·공지를 불러왔습니다.",
@@ -295,7 +345,7 @@ function MifApp() {
     setCart([]);
     setSession(null);
     setPreviewRole("customer");
-    setPage("home");
+    goHome();
     Alert.alert(
       "미리보기 초기화",
       "테스트 전용 데이터를 삭제하고 MIF 빈 데이터 상태로 되돌렸습니다.",
@@ -574,7 +624,7 @@ function MifApp() {
       if (session?.id === accountId) {
         setSession({ ...session, role: nextRole });
         setPreviewRole(nextRole);
-        if (nextRole !== "admin") setPage("more");
+        if (nextRole !== "admin") goToPage("more");
       }
       Alert.alert(
         "권한 변경 완료",
@@ -676,10 +726,6 @@ function MifApp() {
       </SafeAreaView>
     );
 
-  const closeToHome = () => {
-    setSheet(null);
-    setPage("home");
-  };
   const isTabPage = (["home", "products", "orders", "cart", "more"] as Page[]).includes(
     page,
   );
@@ -689,9 +735,10 @@ function MifApp() {
       <AppBar
         role={role}
         unread={roleNotifications.filter((item) => !item.isRead).length}
-        onNotifications={() => setPage("notifications")}
+        onNotifications={() => goToPage("notifications")}
         onAccount={() => setSheet("login")}
-        onClose={isTabPage ? closeToHome : undefined}
+        onBack={isTabPage && page !== "home" ? goBack : undefined}
+        onClose={isTabPage && page !== "home" ? goBack : undefined}
       />
       <View style={[styles.content, !isTabPage && { paddingBottom: insets.bottom }]}>
         {page === "home" && (
@@ -699,7 +746,7 @@ function MifApp() {
             data={data}
             isAdmin={isAdmin}
             cartCount={cart.length}
-            onPage={setPage}
+            onPage={goToPage}
             onProduct={(product) => {
               setEditingProduct(product);
               setSheet("product");
@@ -751,7 +798,7 @@ function MifApp() {
               setEditingAddress(undefined);
               setSheet("address");
             }}
-            onContinueShopping={() => setPage("products")}
+            onContinueShopping={() => goToPage("products")}
           />
         )}
         {page === "orders" && (
@@ -782,7 +829,7 @@ function MifApp() {
             pushMessage={pushMessage}
             onEnablePush={enablePush}
             onTestNotification={sendPreviewNotification}
-            onPage={setPage}
+            onPage={goToPage}
             onSheet={setSheet}
             onRole={setPreviewRole}
             onLoadPreview={loadPreviewScenario}
@@ -797,25 +844,25 @@ function MifApp() {
           <ProfilePage
             session={session}
             role={role}
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onLogin={() => setSheet("login")}
             onPassword={() => setSheet("password")}
             onLogout={() => {
               setSession(null);
               setPreviewRole("customer");
-              setPage("more");
+              goToPage("more");
             }}
           />
         )}
         {page === "appInfo" && (
-          <AppInfoPage onBack={() => setPage("more")} onClose={closeToHome} />
+          <AppInfoPage onBack={goBack} onClose={goBack} />
         )}
         {page === "addresses" && (
           <AddressesPage
             addresses={data.addresses}
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onAdd={() => {
               setEditingAddress(undefined);
               setSheet("address");
@@ -862,16 +909,16 @@ function MifApp() {
             }}
             onShareFavorites={shareFavorites}
             title="찜한 상품"
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
           />
         )}
         {page === "notices" && (
           <NoticesPage
             notices={isAdmin ? data.notices : visibleNotices}
             isAdmin={isAdmin}
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onEdit={(notice) => {
               setEditingNotice(notice);
               setSheet("notice");
@@ -892,8 +939,8 @@ function MifApp() {
           <QaPage
             posts={data.qaPosts}
             isAdmin={isAdmin}
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onCreate={() => {
               setSelectedQa(undefined);
               setSheet("qa");
@@ -908,8 +955,8 @@ function MifApp() {
           <InquiryPage
             inquiries={data.vendorInquiries}
             isAdmin={isAdmin}
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onCreate={() => setSheet("inquiry")}
             onReview={reviewInquiry}
           />
@@ -917,8 +964,8 @@ function MifApp() {
         {page === "notifications" && (
           <NotificationsPage
             notifications={roleNotifications}
-            onBack={() => setPage("home")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onRead={async (id) => {
               await persist({
                 ...data,
@@ -944,9 +991,9 @@ function MifApp() {
         {page === "admin" && (
           <AdminPage
             data={data}
-            onBack={() => setPage("more")}
-            onClose={closeToHome}
-            onPage={setPage}
+            onBack={goBack}
+            onClose={goBack}
+            onPage={goToPage}
             onSheet={setSheet}
             onBulk={bulkAdvanceOrders}
           />
@@ -954,8 +1001,8 @@ function MifApp() {
         {page === "applications" && (
           <ApplicationsPage
             applications={data.signupApplications}
-            onBack={() => setPage("admin")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onReview={reviewSignup}
           />
         )}
@@ -963,16 +1010,16 @@ function MifApp() {
           <AccountRolesPage
             accounts={data.previewAccounts}
             currentAccountId={session?.id}
-            onBack={() => setPage("admin")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onChangeRole={updatePreviewAccountRole}
           />
         )}
         {page === "passwordRequests" && (
           <PasswordRequestsPage
             requests={data.passwordResetRequests}
-            onBack={() => setPage("admin")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onReview={async (request, status) =>
               await persist({
                 ...data,
@@ -986,8 +1033,8 @@ function MifApp() {
         {page === "banks" && (
           <BanksPage
             banks={data.banks}
-            onBack={() => setPage("admin")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onEdit={(bank) => {
               editingBankRef.current = bank;
               setSheet("bank");
@@ -1007,8 +1054,8 @@ function MifApp() {
         {page === "categories" && (
           <CategoriesPage
             categories={adminCategories}
-            onBack={() => setPage("admin")}
-            onClose={closeToHome}
+            onBack={goBack}
+            onClose={goBack}
             onEdit={(category) => {
               setEditingCategory(category);
               setSheet("category");
@@ -1037,7 +1084,7 @@ function MifApp() {
           active={page as Tab}
           cartCount={cart.length}
           bottomInset={insets.bottom}
-          onSelect={(tab) => setPage(tab)}
+          onSelect={goToPage}
         />
       )}
       <LoginSheet
@@ -1287,7 +1334,7 @@ function MifApp() {
         onStatus={changeOrderStatus}
         onReorder={(order) => {
           setCart(order.items);
-          setPage("cart");
+          goToPage("cart");
           setSheet(null);
         }}
         onDelete={async (id) => {
@@ -1304,7 +1351,7 @@ function MifApp() {
         onContinue={() => setCartFeedback(null)}
         onGoCart={() => {
           setCartFeedback(null);
-          setPage("cart");
+          goToPage("cart");
         }}
       />
     </SafeAreaView>
@@ -1329,12 +1376,14 @@ function AppBar({
   unread,
   onNotifications,
   onAccount,
+  onBack,
   onClose,
 }: {
   role: UserRole;
   unread: number;
   onNotifications: () => void;
   onAccount: () => void;
+  onBack?: () => void;
   onClose?: () => void;
 }) {
   return (
@@ -1349,6 +1398,15 @@ function AppBar({
         </View>
       </View>
       <View style={styles.appActions}>
+        {onBack && (
+          <Pressable
+            accessibilityLabel="이전 화면으로 이동"
+            onPress={onBack}
+            style={styles.iconButton}
+          >
+            {icon("chevron-back", palette.navy, 23)}
+          </Pressable>
+        )}
         <Pressable
           onPress={onAccount}
           style={[
@@ -1377,7 +1435,7 @@ function AppBar({
         </Pressable>
         {onClose && (
           <Pressable
-            accessibilityLabel="홈으로 닫기"
+            accessibilityLabel="이전 화면으로 닫기"
             onPress={onClose}
             style={styles.iconButton}
           >
@@ -5137,7 +5195,11 @@ function BackHeader({
 }) {
   return (
     <View style={styles.backHeader}>
-      <Pressable onPress={onBack} style={styles.iconButton}>
+      <Pressable
+        accessibilityLabel="이전 화면으로 이동"
+        onPress={onBack}
+        style={styles.iconButton}
+      >
         {icon("chevron-back", palette.navy, 23)}
       </Pressable>
       <Text style={styles.backTitle}>{title}</Text>
@@ -5152,7 +5214,7 @@ function BackHeader({
           </Pressable>
         )}
         <Pressable
-          accessibilityLabel="홈으로 닫기"
+          accessibilityLabel="이전 화면으로 닫기"
           onPress={onClose}
           style={styles.iconButton}
         >
