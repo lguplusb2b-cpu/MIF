@@ -52,6 +52,7 @@ export type Category = {
 };
 export type ProductBadge = "BEST" | "시즌" | "할인" | "품절임박";
 export type ProductStockStatus = "in_stock" | "out_of_stock";
+export type ProductStorageType = "refrigerated" | "frozen" | "room_temp";
 export const productStockStatusLabel: Record<ProductStockStatus, string> = {
   in_stock: "재고 있음",
   out_of_stock: "품절",
@@ -67,6 +68,7 @@ export type Product = {
   basePrice: number;
   minOrderQty: number;
   stockStatus: ProductStockStatus;
+  storageType?: ProductStorageType;
   description: string;
   imageUri?: string;
   detailImageUris: string[];

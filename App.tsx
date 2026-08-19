@@ -78,6 +78,7 @@ import {
   visibleNotifications,
 } from "./src/notification-workflows";
 import { presentPreviewPush, requestMifPushPermission } from "./src/push";
+import { getProductSaveError, saveProduct } from "./src/product-workflows";
 import { loadMifData, saveMifData } from "./src/storage";
 import {
   addToCart,
@@ -1135,16 +1136,16 @@ function MifApp() {
         isAdmin={isAdmin}
         onClose={() => setSheet(null)}
         onSave={async (product) => {
-          const exists = data.products.some((item) => item.id === product.id);
-          await persist({
-            ...data,
-            products: exists
-              ? data.products.map((item) =>
-                  item.id === product.id ? product : item,
-                )
-              : [product, ...data.products],
-          });
-          setSheet(null);
+          try {
+            await persist(saveProduct(data, product, productCategories));
+            setEditingProduct(undefined);
+            setSheet(null);
+          } catch (error) {
+            Alert.alert(
+              "상품 저장",
+              error instanceof Error ? error.message : "상품을 저장하지 못했습니다.",
+            );
+          }
         }}
         onAdd={addProductToCart}
         onFavorite={toggleFavorite}
@@ -3509,6 +3510,7 @@ function ProductRow({
           </Text>
           <View style={styles.badgeRow}>
             <StockStatusBadge status={product.stockStatus} />
+            <StorageTypeBadge storageType={product.storageType} />
             {product.badges.map((badge) => (
               <Text key={badge} style={styles.marketingBadge}>
                 {badge}
@@ -3546,6 +3548,16 @@ function ProductRow({
       </View>
     </View>
   );
+}
+
+function StorageTypeBadge({ storageType }: { storageType?: Product["storageType"] }) {
+  if (!storageType) return null;
+  const labels: Record<NonNullable<Product["storageType"]>, string> = {
+    refrigerated: "냉장",
+    frozen: "냉동",
+    room_temp: "실온",
+  };
+  return <Text style={styles.marketingBadge}>{labels[storageType]}</Text>;
 }
 
 function StockStatusBadge({
@@ -3932,35 +3944,52 @@ function ProductSheet({
   const [stockStatus, setStockStatus] = useState(
     product?.stockStatus ?? "in_stock",
   );
+  const [storageType, setStorageType] = useState<Product["storageType"]>(
+    product?.storageType ?? "room_temp",
+  );
   const [imageUri, setImageUri] = useState(product?.imageUri ?? "");
+  const [detailImageUris, setDetailImageUris] = useState<string[]>(
+    product?.detailImageUris ?? [],
+  );
   const [badges, setBadges] = useState<ProductBadge[]>(product?.badges ?? []);
   useEffect(() => {
     if (visible) {
+      const defaultCategory = categories.find((item) => item.isActive);
       setName(product?.name ?? "");
-      setCategoryId(product?.categoryId ?? "");
-      setCategoryName(product?.categoryName ?? "");
+      setCategoryId(product?.categoryId ?? defaultCategory?.id ?? "");
+      setCategoryName(product?.categoryName ?? defaultCategory?.name ?? "");
       setSpec(product?.spec ?? "");
       setUnit(product?.unit ?? "개");
       setPrice(product ? String(product.basePrice) : "");
       setMinQty(product ? String(product.minOrderQty) : "1");
       setDescription(product?.description ?? "");
       setStockStatus(product?.stockStatus ?? "in_stock");
+      setStorageType(product?.storageType ?? "room_temp");
       setImageUri(product?.imageUri ?? "");
+      setDetailImageUris(product?.detailImageUris ?? []);
       setBadges(product?.badges ?? []);
     }
-  }, [visible, product]);
-  const pick = async () => {
+  }, [visible, product, categories]);
+  const pickMainImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       quality: 0.8,
     });
     if (!result.canceled) setImageUri(result.assets[0].uri);
   };
-  const save = () => {
-    if (!name.trim() || !Number(price))
-      return Alert.alert("입력 확인", "상품명과 단가를 입력해 주세요.");
+  const pickDetailImages = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+      allowsMultipleSelection: true,
+      selectionLimit: 5,
+    });
+    if (!result.canceled)
+      setDetailImageUris(result.assets.map((asset) => asset.uri).filter(Boolean).slice(0, 5));
+  };
+  const save = async () => {
     const category = categories.find((item) => item.id === categoryId);
-    onSave({
+    const nextProduct: Product = {
       id: product?.id ?? makeId("prd"),
       name: name.trim(),
       categoryId: category?.id || undefined,
@@ -3970,14 +3999,18 @@ function ProductSheet({
       basePrice: Number(price),
       minOrderQty: Math.max(1, Number(minQty) || 1),
       stockStatus,
+      storageType,
       description,
       imageUri: imageUri || undefined,
-      detailImageUris: product?.detailImageUris ?? [],
+      detailImageUris,
       badges,
       featuredPriority: product?.featuredPriority,
       createdAt: product?.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-    });
+    };
+    const error = getProductSaveError(nextProduct, categories);
+    if (error) return Alert.alert("입력 확인", error);
+    await onSave(nextProduct);
   };
   if (!visible) return null;
   return (
@@ -4070,10 +4103,16 @@ function ProductSheet({
             placeholder="상품 상세 설명"
             multiline
           />
-          <Pressable style={styles.attach} onPress={pick}>
+          <Pressable style={styles.attach} onPress={pickMainImage}>
             {icon("image-outline")}
             <Text style={styles.attachText}>
-              {imageUri ? "상품 이미지 선택됨" : "상품 이미지 선택"}
+              {imageUri ? "대표 이미지 선택됨" : "대표 이미지 선택"}
+            </Text>
+          </Pressable>
+          <Pressable style={styles.attach} onPress={pickDetailImages}>
+            {icon("images-outline")}
+            <Text style={styles.attachText}>
+              상세 이미지 {detailImageUris.length ? `${detailImageUris.length}장 선택됨` : "선택"} (최대 5장)
             </Text>
           </Pressable>
           <Text style={styles.fieldLabel}>재고 상태</Text>
@@ -4092,6 +4131,21 @@ function ProductSheet({
           <Text style={styles.helper}>
             선택한 상태는 상품 목록과 상세 화면의 재고 배지에 즉시 표시됩니다.
           </Text>
+          <Text style={styles.fieldLabel}>보관 상태</Text>
+          <View style={styles.filterRow}>
+            {([
+              ["refrigerated", "냉장"],
+              ["frozen", "냉동"],
+              ["room_temp", "실온"],
+            ] as const).map(([value, label]) => (
+              <Chip
+                key={value}
+                label={label}
+                active={storageType === value}
+                onPress={() => setStorageType(value)}
+              />
+            ))}
+          </View>
           <Text style={styles.fieldLabel}>마케팅 배지</Text>
           <View style={styles.filterRow}>
             {(["BEST", "시즌", "할인", "품절임박"] as ProductBadge[]).map(
@@ -4139,7 +4193,10 @@ function ProductSheet({
           <Text style={styles.muted}>
             {product?.spec} · {product?.unit}
           </Text>
-          {product && <StockStatusBadge status={product.stockStatus} />}
+          <View style={styles.badgeRow}>
+            {product && <StockStatusBadge status={product.stockStatus} />}
+            <StorageTypeBadge storageType={product?.storageType} />
+          </View>
           <Text style={styles.detailPrice}>
             {money(product?.basePrice || 0)}
           </Text>
