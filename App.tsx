@@ -532,6 +532,13 @@ export default function App() {
       </SafeAreaView>
     );
 
+  const closeToHome = () => {
+    setSheet(null);
+    setPage("home");
+  };
+  const isTabPage = (["home", "products", "orders", "cart", "more"] as Page[]).includes(
+    page,
+  );
   const content = (
     <SafeAreaView style={styles.app}>
       <StatusBar style="dark" />
@@ -540,6 +547,7 @@ export default function App() {
         unread={roleNotifications.filter((item) => !item.isRead).length}
         onNotifications={() => setPage("notifications")}
         onAccount={() => setSheet("login")}
+        onClose={isTabPage ? closeToHome : undefined}
       />
       <View style={styles.content}>
         {page === "home" && (
@@ -646,6 +654,7 @@ export default function App() {
             session={session}
             role={role}
             onBack={() => setPage("more")}
+            onClose={closeToHome}
             onLogin={() => setSheet("login")}
             onPassword={() => setSheet("password")}
             onLogout={() => {
@@ -656,12 +665,13 @@ export default function App() {
           />
         )}
         {page === "appInfo" && (
-          <AppInfoPage onBack={() => setPage("more")} />
+          <AppInfoPage onBack={() => setPage("more")} onClose={closeToHome} />
         )}
         {page === "addresses" && (
           <AddressesPage
             addresses={data.addresses}
             onBack={() => setPage("more")}
+            onClose={closeToHome}
             onEdit={(address) => {
               setEditingAddress(address);
               setSheet("address");
@@ -700,6 +710,8 @@ export default function App() {
             }}
             onShareFavorites={shareFavorites}
             title="찜한 상품"
+            onBack={() => setPage("more")}
+            onClose={closeToHome}
           />
         )}
         {page === "notices" && (
@@ -707,6 +719,7 @@ export default function App() {
             notices={isAdmin ? data.notices : visibleNotices}
             isAdmin={isAdmin}
             onBack={() => setPage("more")}
+            onClose={closeToHome}
             onEdit={(notice) => {
               setEditingNotice(notice);
               setSheet("notice");
@@ -728,6 +741,7 @@ export default function App() {
             posts={data.qaPosts}
             isAdmin={isAdmin}
             onBack={() => setPage("more")}
+            onClose={closeToHome}
             onCreate={() => {
               setSelectedQa(undefined);
               setSheet("qa");
@@ -743,6 +757,7 @@ export default function App() {
             inquiries={data.vendorInquiries}
             isAdmin={isAdmin}
             onBack={() => setPage("more")}
+            onClose={closeToHome}
             onCreate={() => setSheet("inquiry")}
             onReview={reviewInquiry}
           />
@@ -751,6 +766,7 @@ export default function App() {
           <NotificationsPage
             notifications={roleNotifications}
             onBack={() => setPage("home")}
+            onClose={closeToHome}
             onRead={async (id) => {
               await persist({
                 ...data,
@@ -777,6 +793,7 @@ export default function App() {
           <AdminPage
             data={data}
             onBack={() => setPage("more")}
+            onClose={closeToHome}
             onPage={setPage}
             onSheet={setSheet}
             onBulk={bulkAdvanceOrders}
@@ -786,6 +803,7 @@ export default function App() {
           <ApplicationsPage
             applications={data.signupApplications}
             onBack={() => setPage("admin")}
+            onClose={closeToHome}
             onReview={reviewSignup}
           />
         )}
@@ -793,6 +811,7 @@ export default function App() {
           <PasswordRequestsPage
             requests={data.passwordResetRequests}
             onBack={() => setPage("admin")}
+            onClose={closeToHome}
             onReview={async (request, status) =>
               await persist({
                 ...data,
@@ -807,6 +826,7 @@ export default function App() {
           <BanksPage
             banks={data.banks}
             onBack={() => setPage("admin")}
+            onClose={closeToHome}
             onEdit={(bank) => {
               editingBankRef.current = bank;
               setSheet("bank");
@@ -827,6 +847,7 @@ export default function App() {
           <CategoriesPage
             categories={data.categories}
             onBack={() => setPage("admin")}
+            onClose={closeToHome}
             onEdit={(category) => {
               editingCategoryRef.current = category;
               setSheet("category");
@@ -1139,11 +1160,13 @@ function AppBar({
   unread,
   onNotifications,
   onAccount,
+  onClose,
 }: {
   role: UserRole;
   unread: number;
   onNotifications: () => void;
   onAccount: () => void;
+  onClose?: () => void;
 }) {
   return (
     <View style={styles.appbar}>
@@ -1183,6 +1206,15 @@ function AppBar({
             </View>
           )}
         </Pressable>
+        {onClose && (
+          <Pressable
+            accessibilityLabel="홈으로 닫기"
+            onPress={onClose}
+            style={styles.iconButton}
+          >
+            {icon("close-outline", palette.navy, 22)}
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -1337,6 +1369,8 @@ function ProductsPage({
   onAddProduct,
   onShareFavorites,
   title = "상품",
+  onBack,
+  onClose,
 }: {
   categories: Category[];
   products: Product[];
@@ -1356,6 +1390,8 @@ function ProductsPage({
   onAddProduct?: () => void;
   onShareFavorites?: (products: Product[]) => void;
   title?: string;
+  onBack?: () => void;
+  onClose?: () => void;
 }) {
   const headerAction =
     isAdmin && onAddProduct
@@ -1368,15 +1404,19 @@ function ProductsPage({
         : undefined;
   return (
     <View style={styles.page}>
-      <PageHeader
-        title={title}
-        subtitle={
-          favoritesOnly
-            ? "저장한 상품을 확인하거나 공유하세요."
-            : "카테고리·검색·정렬로 상품을 찾으세요."
-        }
-        action={headerAction}
-      />
+      {onBack && onClose ? (
+        <BackHeader title={title} onBack={onBack} onClose={onClose} action={headerAction} />
+      ) : (
+        <PageHeader
+          title={title}
+          subtitle={
+            favoritesOnly
+              ? "저장한 상품을 확인하거나 공유하세요."
+              : "카테고리·검색·정렬로 상품을 찾으세요."
+          }
+          action={headerAction}
+        />
+      )}
       {!favoritesOnly && (
         <>
           <View style={styles.searchBox}>
@@ -1810,6 +1850,13 @@ function CartPage({
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.confirmModal}>
+            <ModalCloseButton
+              accessibilityLabel="택배 배송 안내 닫기"
+              onPress={() => {
+                setCourierConfirmVisible(false);
+                setMethod(null);
+              }}
+            />
             <Text style={styles.modalTitle}>📦 택배 배송</Text>
             <Text style={styles.modalCopy}>
               택배 배송은 기본 배송지를 사용하며, 희망일과 시간은 지정할 수
@@ -1861,6 +1908,10 @@ function CartPage({
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.confirmModal}>
+            <ModalCloseButton
+              accessibilityLabel="배송 희망일 선택 닫기"
+              onPress={() => setDeliveryDateVisible(false)}
+            />
             <Text style={styles.modalTitle}>📅 배송 희망일 선택</Text>
             <Field
               label="날짜"
@@ -1912,8 +1963,12 @@ function CartFeedbackModal({
       animationType="fade"
       onRequestClose={onContinue}
     >
-      <View style={styles.modalBackdrop}>
-        <View style={styles.confirmModal}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.confirmModal}>
+          <ModalCloseButton
+            accessibilityLabel="장바구니 담기 안내 닫기"
+            onPress={onContinue}
+          />
           <Text style={styles.modalIcon}>🛒</Text>
           <Text style={styles.modalTitle}>장바구니에 담았습니다!</Text>
           <Text style={styles.modalCopy}>{feedback?.productName}</Text>
@@ -2268,6 +2323,7 @@ function ProfilePage({
   session,
   role,
   onBack,
+  onClose,
   onLogin,
   onPassword,
   onLogout,
@@ -2275,6 +2331,7 @@ function ProfilePage({
   session: SessionUser | null;
   role: UserRole;
   onBack: () => void;
+  onClose: () => void;
   onLogin: () => void;
   onPassword: () => void;
   onLogout: () => void;
@@ -2282,7 +2339,7 @@ function ProfilePage({
   const isSignedIn = Boolean(session);
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <BackHeader title="내 계정과 보안" onBack={onBack} />
+      <BackHeader title="내 계정과 보안" onBack={onBack} onClose={onClose} />
       <View style={styles.account}>
         <View style={styles.accountMark}>
           <Text style={styles.accountMarkText}>{role === "admin" ? "A" : "M"}</Text>
@@ -2321,10 +2378,10 @@ function ProfilePage({
   );
 }
 
-function AppInfoPage({ onBack }: { onBack: () => void }) {
+function AppInfoPage({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <BackHeader title="앱 정보" onBack={onBack} />
+      <BackHeader title="앱 정보" onBack={onBack} onClose={onClose} />
       <View style={styles.dashboard}>
         <Text style={styles.eyebrow}>MIF B2B ORDER</Text>
         <Text style={styles.dashboardTitle}>MIF ORDER TALK</Text>
@@ -2356,12 +2413,14 @@ function AppInfoPage({ onBack }: { onBack: () => void }) {
 function AdminPage({
   data,
   onBack,
+  onClose,
   onPage,
   onSheet,
   onBulk,
 }: {
   data: MifData;
   onBack: () => void;
+  onClose: () => void;
   onPage: (page: Page) => void;
   onSheet: (sheet: Sheet) => void;
   onBulk: () => void;
@@ -2371,7 +2430,7 @@ function AdminPage({
   );
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <BackHeader title="관리자 업무" onBack={onBack} />
+      <BackHeader title="관리자 업무" onBack={onBack} onClose={onClose} />
       <View style={styles.dashboard}>
         <Text style={styles.eyebrow}>TODAY MIF DASHBOARD</Text>
         <Text style={styles.dashboardTitle}>
@@ -2448,17 +2507,19 @@ function AdminPage({
 function AddressesPage({
   addresses,
   onBack,
+  onClose,
   onEdit,
   onDelete,
 }: {
   addresses: Address[];
   onBack: () => void;
+  onClose: () => void;
   onEdit: (address: Address) => void;
   onDelete: (id: string) => void;
 }) {
   return (
     <View style={styles.page}>
-      <BackHeader title="배송지 관리" onBack={onBack} />
+      <BackHeader title="배송지 관리" onBack={onBack} onClose={onClose} />
       <FlatList
         data={addresses}
         keyExtractor={(item) => item.id}
@@ -2504,6 +2565,7 @@ function NoticesPage({
   notices,
   isAdmin,
   onBack,
+  onClose,
   onEdit,
   onCreate,
   onDelete,
@@ -2511,6 +2573,7 @@ function NoticesPage({
   notices: Notice[];
   isAdmin: boolean;
   onBack: () => void;
+  onClose: () => void;
   onEdit: (notice: Notice) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
@@ -2520,6 +2583,7 @@ function NoticesPage({
       <BackHeader
         title="공지사항"
         onBack={onBack}
+        onClose={onClose}
         action={isAdmin ? { icon: "add", onPress: onCreate } : undefined}
       />
       <FlatList
@@ -2569,12 +2633,14 @@ function QaPage({
   posts,
   isAdmin,
   onBack,
+  onClose,
   onCreate,
   onOpen,
 }: {
   posts: QAPost[];
   isAdmin: boolean;
   onBack: () => void;
+  onClose: () => void;
   onCreate: () => void;
   onOpen: (post: QAPost) => void;
 }) {
@@ -2583,6 +2649,7 @@ function QaPage({
       <BackHeader
         title={isAdmin ? "Q&A 관리" : "Q&A 게시판"}
         onBack={onBack}
+        onClose={onClose}
         action={
           !isAdmin ? { icon: "create-outline", onPress: onCreate } : undefined
         }
@@ -2635,12 +2702,14 @@ function InquiryPage({
   inquiries,
   isAdmin,
   onBack,
+  onClose,
   onCreate,
   onReview,
 }: {
   inquiries: VendorInquiry[];
   isAdmin: boolean;
   onBack: () => void;
+  onClose: () => void;
   onCreate: () => void;
   onReview: (inquiry: VendorInquiry, decision: ApplicationStatus) => void;
 }) {
@@ -2649,6 +2718,7 @@ function InquiryPage({
       <BackHeader
         title={isAdmin ? "입점 문의 관리" : "입점 문의"}
         onBack={onBack}
+        onClose={onClose}
         action={
           !isAdmin ? { icon: "create-outline", onPress: onCreate } : undefined
         }
@@ -2701,10 +2771,12 @@ function InquiryPage({
 function ApplicationsPage({
   applications,
   onBack,
+  onClose,
   onReview,
 }: {
   applications: SignupApplication[];
   onBack: () => void;
+  onClose: () => void;
   onReview: (
     application: SignupApplication,
     decision: ApplicationStatus,
@@ -2712,7 +2784,7 @@ function ApplicationsPage({
 }) {
   return (
     <View style={styles.page}>
-      <BackHeader title="거래처 가입 신청" onBack={onBack} />
+      <BackHeader title="거래처 가입 신청" onBack={onBack} onClose={onClose} />
       <FlatList
         data={applications}
         keyExtractor={(item) => item.id}
@@ -2759,10 +2831,12 @@ function ApplicationsPage({
 function PasswordRequestsPage({
   requests,
   onBack,
+  onClose,
   onReview,
 }: {
   requests: PasswordResetRequest[];
   onBack: () => void;
+  onClose: () => void;
   onReview: (
     request: PasswordResetRequest,
     status: "completed" | "rejected",
@@ -2770,7 +2844,7 @@ function PasswordRequestsPage({
 }) {
   return (
     <View style={styles.page}>
-      <BackHeader title="비밀번호 재설정 요청" onBack={onBack} />
+      <BackHeader title="비밀번호 재설정 요청" onBack={onBack} onClose={onClose} />
       <FlatList
         data={requests}
         keyExtractor={(item) => item.id}
@@ -2825,12 +2899,14 @@ function PasswordRequestsPage({
 function BanksPage({
   banks,
   onBack,
+  onClose,
   onEdit,
   onAdd,
   onDelete,
 }: {
   banks: BankAccount[];
   onBack: () => void;
+  onClose: () => void;
   onEdit: (bank: BankAccount) => void;
   onAdd: () => void;
   onDelete: (id: string) => void;
@@ -2840,6 +2916,7 @@ function BanksPage({
       <BackHeader
         title="결제은행 관리"
         onBack={onBack}
+        onClose={onClose}
         action={{ icon: "add", onPress: onAdd }}
       />
       <FlatList
@@ -2881,12 +2958,14 @@ function BanksPage({
 function CategoriesPage({
   categories,
   onBack,
+  onClose,
   onEdit,
   onAdd,
   onDelete,
 }: {
   categories: Category[];
   onBack: () => void;
+  onClose: () => void;
   onEdit: (category: Category) => void;
   onAdd: () => void;
   onDelete: (id: string) => void;
@@ -2896,6 +2975,7 @@ function CategoriesPage({
       <BackHeader
         title="카테고리 관리"
         onBack={onBack}
+        onClose={onClose}
         action={{ icon: "add", onPress: onAdd }}
       />
       <FlatList
@@ -2937,11 +3017,13 @@ function CategoriesPage({
 function NotificationsPage({
   notifications,
   onBack,
+  onClose,
   onRead,
   onReadAll,
 }: {
   notifications: MifData["notifications"];
   onBack: () => void;
+  onClose: () => void;
   onRead: (id: string) => void;
   onReadAll: () => void;
 }) {
@@ -2950,6 +3032,7 @@ function NotificationsPage({
       <BackHeader
         title="알림"
         onBack={onBack}
+        onClose={onClose}
         action={{ icon: "checkmark-done-outline", onPress: onReadAll }}
       />
       <FlatList
@@ -4275,10 +4358,12 @@ function OrderSheet({
 function BackHeader({
   title,
   onBack,
+  onClose,
   action,
 }: {
   title: string;
   onBack: () => void;
+  onClose: () => void;
   action?: { icon: string; onPress: () => void };
 }) {
   return (
@@ -4287,13 +4372,24 @@ function BackHeader({
         {icon("chevron-back", palette.navy, 23)}
       </Pressable>
       <Text style={styles.backTitle}>{title}</Text>
-      {action ? (
-        <Pressable onPress={action.onPress} style={styles.iconButton}>
-          {icon(action.icon, palette.teal, 23)}
+      <View style={styles.headerActions}>
+        {action && (
+          <Pressable
+            accessibilityLabel={`${title} 추가 작업`}
+            onPress={action.onPress}
+            style={styles.iconButton}
+          >
+            {icon(action.icon, palette.teal, 23)}
+          </Pressable>
+        )}
+        <Pressable
+          accessibilityLabel="홈으로 닫기"
+          onPress={onClose}
+          style={styles.iconButton}
+        >
+          {icon("close-outline", palette.navy, 23)}
         </Pressable>
-      ) : (
-        <View style={{ width: 36 }} />
-      )}
+      </View>
     </View>
   );
 }
@@ -4516,11 +4612,15 @@ function Sheet({
     >
       <SafeAreaView style={styles.sheetSafe}>
         <View style={styles.sheetHeader}>
-          <Pressable onPress={onClose}>
-            <Text style={styles.cancel}>닫기</Text>
+          <Pressable
+            accessibilityLabel={`${title} 닫기`}
+            onPress={onClose}
+            style={styles.iconButton}
+          >
+            {icon("close-outline", palette.navy, 23)}
           </Pressable>
           <Text style={styles.sheetTitle}>{title}</Text>
-          <View style={{ width: 28 }} />
+          <View style={{ width: 34 }} />
         </View>
         <ScrollView
           contentContainerStyle={styles.sheetBody}
@@ -4530,6 +4630,23 @@ function Sheet({
         </ScrollView>
       </SafeAreaView>
     </Modal>
+  );
+}
+function ModalCloseButton({
+  accessibilityLabel,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      style={styles.modalClose}
+    >
+      {icon("close-outline", palette.navy, 22)}
+    </Pressable>
   );
 }
 function TabBar({
@@ -4674,6 +4791,7 @@ const styles: any = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 2 },
   badgeDot: {
     position: "absolute",
     top: 1,

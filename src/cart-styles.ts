@@ -14,6 +14,7 @@ export const cartStyles: any = {
   deliverySummary: { color: "#007C91", fontSize: 11, fontWeight: "800" as const, marginTop: 3 },
   modalBackdrop: { flex: 1, justifyContent: "center" as const, alignItems: "center" as const, padding: 24, backgroundColor: "#10182899" },
   confirmModal: { width: "100%" as const, maxWidth: 360, padding: 22, gap: 12, borderRadius: 20, backgroundColor: "#FFFFFF", shadowColor: "#102A43", shadowOpacity: 0.2, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
+  modalClose: { position: "absolute" as const, top: 9, right: 9, zIndex: 2, width: 34, height: 34, alignItems: "center" as const, justifyContent: "center" as const, borderRadius: 17, backgroundColor: "#F4F7F9" },
   modalIcon: { fontSize: 34, textAlign: "center" as const },
   modalTitle: { color: "#102A43", fontSize: 19, fontWeight: "900" as const, textAlign: "center" as const },
   modalCopy: { color: "#667085", fontSize: 13, lineHeight: 19, textAlign: "center" as const },
