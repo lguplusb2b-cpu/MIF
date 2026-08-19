@@ -27,6 +27,11 @@ import {
   getSignupCredentialError,
 } from "./src/auth-workflows";
 import { changePreviewAccountRole, roleLabel } from "./src/role-workflows";
+import {
+  orderedProductCategories,
+  removeCategory,
+  saveCategory,
+} from "./src/category-workflows";
 import { cartStyles } from "./src/cart-styles";
 import {
   createPreviewMifData,
@@ -227,6 +232,7 @@ function MifApp() {
   const [editingProduct, setEditingProduct] = useState<Product | undefined>();
   const [editingAddress, setEditingAddress] = useState<Address | undefined>();
   const [editingNotice, setEditingNotice] = useState<Notice | undefined>();
+  const [editingCategory, setEditingCategory] = useState<Category | undefined>();
   const [selectedOrder, setSelectedOrder] = useState<Order | undefined>();
   const [selectedQa, setSelectedQa] = useState<QAPost | undefined>();
   const [session, setSession] = useState<SessionUser | null>(null);
@@ -289,8 +295,17 @@ function MifApp() {
     () => data.notices.filter((notice) => isVisibleNotice(notice)),
     [data.notices],
   );
-  const categoryMap = useMemo(
-    () => new Map(data.categories.map((category) => [category.id, category])),
+  const productCategories = useMemo(
+    () => orderedProductCategories(data.categories),
+    [data.categories],
+  );
+  const adminCategories = useMemo(
+    () =>
+      [...data.categories].sort(
+        (left, right) =>
+          left.sortOrder - right.sortOrder ||
+          left.name.localeCompare(right.name, "ko"),
+      ),
     [data.categories],
   );
 
@@ -677,7 +692,7 @@ function MifApp() {
         )}
         {page === "products" && (
           <ProductsPage
-            categories={data.categories}
+            categories={productCategories}
             products={productList}
             favorites={data.favorites}
             query={productQuery}
@@ -800,7 +815,7 @@ function MifApp() {
         )}
         {page === "favorites" && (
           <ProductsPage
-            categories={data.categories}
+            categories={productCategories}
             products={data.products.filter((product) =>
               data.favorites.includes(product.id),
             )}
@@ -966,34 +981,21 @@ function MifApp() {
         )}
         {page === "categories" && (
           <CategoriesPage
-            categories={data.categories}
+            categories={adminCategories}
             onBack={() => setPage("admin")}
             onClose={closeToHome}
             onEdit={(category) => {
-              editingCategoryRef.current = category;
+              setEditingCategory(category);
               setSheet("category");
             }}
             onAdd={() => {
-              editingCategoryRef.current = undefined;
+              setEditingCategory(undefined);
               setSheet("category");
             }}
-            onDelete={async (id) =>
-              await persist({
-                ...data,
-                categories: data.categories.filter(
-                  (category) => category.id !== id,
-                ),
-                products: data.products.map((product) =>
-                  product.categoryId === id
-                    ? {
-                        ...product,
-                        categoryId: undefined,
-                        categoryName: "미분류",
-                      }
-                    : product,
-                ),
-              })
-            }
+            onDelete={async (id) => {
+              if (productCategory === id) setProductCategory("ALL");
+              await persist(removeCategory(data, id));
+            }}
           />
         )}
       </View>
@@ -1117,7 +1119,7 @@ function MifApp() {
       <ProductSheet
         visible={sheet === "product"}
         product={editingProduct}
-        categories={data.categories}
+        categories={productCategories}
         isAdmin={isAdmin}
         onClose={() => setSheet(null)}
         onSave={async (product) => {
@@ -1169,6 +1171,27 @@ function MifApp() {
               : [...data.banks, bank],
           });
           setSheet(null);
+        }}
+      />
+      <CategorySheet
+        visible={sheet === "category"}
+        category={editingCategory}
+        nextSortOrder={
+          Math.max(0, ...data.categories.map((item) => item.sortOrder)) + 1
+        }
+        onClose={() => setSheet(null)}
+        onSave={async (category) => {
+          try {
+            await persist(saveCategory(data, category));
+            setSheet(null);
+          } catch (error) {
+            Alert.alert(
+              "카테고리 저장",
+              error instanceof Error
+                ? error.message
+                : "카테고리를 저장할 수 없습니다.",
+            );
+          }
         }}
       />
       <NoticeSheet
@@ -1275,7 +1298,6 @@ function MifApp() {
 }
 
 const editingBankRef: { current?: BankAccount } = {};
-const editingCategoryRef: { current?: Category } = {};
 
 function AppBar({
   role,
@@ -4269,6 +4291,89 @@ function BankSheet({
           });
         }}
       />
+    </Sheet>
+  );
+}
+
+function CategorySheet({
+  visible,
+  category,
+  nextSortOrder,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  category?: Category;
+  nextSortOrder: number;
+  onClose: () => void;
+  onSave: (category: Category) => Promise<void>;
+}) {
+  const [name, setName] = useState(category?.name ?? "");
+  const [iconValue, setIconValue] = useState(category?.icon ?? "📦");
+  const [sortOrder, setSortOrder] = useState(
+    String(category?.sortOrder ?? nextSortOrder),
+  );
+  const [isActive, setIsActive] = useState(category?.isActive ?? true);
+
+  useEffect(() => {
+    if (!visible) return;
+    setName(category?.name ?? "");
+    setIconValue(category?.icon ?? "📦");
+    setSortOrder(String(category?.sortOrder ?? nextSortOrder));
+    setIsActive(category?.isActive ?? true);
+  }, [visible, category, nextSortOrder]);
+
+  const save = async () => {
+    if (!name.trim())
+      return Alert.alert("입력 확인", "카테고리명을 입력해 주세요.");
+    await onSave({
+      id: category?.id ?? makeId("cat"),
+      name,
+      icon: iconValue,
+      sortOrder: Number(sortOrder) || nextSortOrder,
+      isActive,
+    });
+  };
+
+  return (
+    <Sheet
+      visible={visible}
+      title={category ? "카테고리 수정" : "카테고리 등록"}
+      onClose={onClose}
+    >
+      <Field
+        label="카테고리명"
+        value={name}
+        onChangeText={setName}
+        placeholder="예: 냉동식품"
+      />
+      <Field
+        label="아이콘"
+        value={iconValue}
+        onChangeText={setIconValue}
+        placeholder="예: 🧊"
+      />
+      <Field
+        label="노출 순서"
+        value={sortOrder}
+        onChangeText={setSortOrder}
+        placeholder="숫자가 작을수록 먼저 표시"
+        keyboardType="numeric"
+      />
+      <View style={styles.switchRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.strong}>상품 화면에 노출</Text>
+          <Text style={styles.muted}>
+            숨김 처리한 카테고리는 기존 상품에 남아도 새 상품 분류·필터에는 표시되지 않습니다.
+          </Text>
+        </View>
+        <Switch
+          value={isActive}
+          onValueChange={setIsActive}
+          trackColor={{ true: palette.teal }}
+        />
+      </View>
+      <Primary text={category ? "수정 저장" : "카테고리 추가"} onPress={save} />
     </Sheet>
   );
 }
