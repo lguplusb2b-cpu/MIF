@@ -26,6 +26,7 @@ import {
   findPreviewAccount,
   getSignupCredentialError,
 } from "./src/auth-workflows";
+import { changePreviewAccountRole, roleLabel } from "./src/role-workflows";
 import { cartStyles } from "./src/cart-styles";
 import {
   createPreviewMifData,
@@ -55,6 +56,7 @@ import {
   type Product,
   type ProductBadge,
   type PasswordResetRequest,
+  type PreviewAccount,
   type QAPost,
   type SessionUser,
   type SignupApplication,
@@ -123,6 +125,7 @@ type Page =
   | "favorites"
   | "inquiry"
   | "applications"
+  | "accountRoles"
   | "passwordRequests"
   | "banks"
   | "categories"
@@ -460,6 +463,34 @@ export default function App() {
       "onboarding",
       "customer",
     );
+  };
+  const updatePreviewAccountRole = async (
+    accountId: string,
+    nextRole: UserRole,
+  ) => {
+    try {
+      const previewAccounts = changePreviewAccountRole(
+        data.previewAccounts,
+        role,
+        accountId,
+        nextRole,
+      );
+      await persist({ ...data, previewAccounts });
+      if (session?.id === accountId) {
+        setSession({ ...session, role: nextRole });
+        setPreviewRole(nextRole);
+        if (nextRole !== "admin") setPage("more");
+      }
+      Alert.alert(
+        "권한 변경 완료",
+        `선택한 계정을 ${roleLabel[nextRole]}로 지정했습니다.`,
+      );
+    } catch (error) {
+      Alert.alert(
+        "권한 변경 불가",
+        error instanceof Error ? error.message : "권한을 변경할 수 없습니다.",
+      );
+    }
   };
   const updateOrderSelection = (id: string) =>
     setSelectedOrderIds((current) =>
@@ -823,6 +854,15 @@ export default function App() {
             onBack={() => setPage("admin")}
             onClose={closeToHome}
             onReview={reviewSignup}
+          />
+        )}
+        {page === "accountRoles" && isAdmin && (
+          <AccountRolesPage
+            accounts={data.previewAccounts}
+            currentAccountId={session?.id}
+            onBack={() => setPage("admin")}
+            onClose={closeToHome}
+            onChangeRole={updatePreviewAccountRole}
           />
         )}
         {page === "passwordRequests" && (
@@ -2492,6 +2532,12 @@ function AdminPage({
         onPress={() => onPage("applications")}
       />
       <AdminGrid
+        icon="shield-checkmark-outline"
+        label="계정 권한 관리"
+        copy={`관리자 ${data.previewAccounts.filter((account) => account.role === "admin").length}명 · 거래처 ${data.previewAccounts.filter((account) => account.role === "customer").length}명`}
+        onPress={() => onPage("accountRoles")}
+      />
+      <AdminGrid
         icon="key-outline"
         label="비밀번호 재설정 요청"
         copy={`대기 ${data.passwordResetRequests.filter((item) => item.status === "pending").length}건`}
@@ -2519,6 +2565,115 @@ function AdminPage({
         <Text style={styles.bulkText}>선택 주문 일괄 상태 처리</Text>
       </Pressable>
     </ScrollView>
+  );
+}
+
+function AccountRolesPage({
+  accounts,
+  currentAccountId,
+  onBack,
+  onClose,
+  onChangeRole,
+}: {
+  accounts: PreviewAccount[];
+  currentAccountId?: string;
+  onBack: () => void;
+  onClose: () => void;
+  onChangeRole: (accountId: string, role: UserRole) => void;
+}) {
+  const sortedAccounts = [...accounts].sort(
+    (left, right) => Number(right.role === "admin") - Number(left.role === "admin"),
+  );
+  return (
+    <View style={styles.page}>
+      <BackHeader title="계정 권한 관리" onBack={onBack} onClose={onClose} />
+      <FlatList
+        data={sortedAccounts}
+        keyExtractor={(account) => account.id}
+        contentContainerStyle={styles.list}
+        ListHeaderComponent={
+          <View style={styles.roleIntro}>
+            <View style={styles.roleIntroIcon}>
+              {icon("shield-checkmark-outline", palette.teal, 21)}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.strong}>승인 계정 권한 지정</Text>
+              <Text style={styles.muted}>
+                승인된 거래처와 가입 계정을 관리자 또는 거래처로 지정합니다.
+              </Text>
+            </View>
+          </View>
+        }
+        ListEmptyComponent={
+          <InlineEmpty
+            icon="people-outline"
+            title="관리할 승인 계정이 없습니다"
+            copy="가입 신청을 승인하면 계정 권한 관리 목록에 표시됩니다."
+          />
+        }
+        renderItem={({ item: account }) => {
+          const isCurrentAccount = currentAccountId === account.id;
+          return (
+            <View style={styles.accountRoleCard}>
+              <View style={styles.sectionRow}>
+                <View style={{ flex: 1, gap: 3 }}>
+                  <Text style={styles.strong}>{account.name}</Text>
+                  <Text style={styles.muted}>
+                    {account.companyName ? `${account.companyName} · ` : ""}
+                    {account.loginId}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.roleBadge,
+                    account.role === "admin"
+                      ? styles.roleBadgeAdmin
+                      : styles.roleBadgeCustomer,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.roleBadgeText,
+                      { color: account.role === "admin" ? palette.purple : palette.teal },
+                    ]}
+                  >
+                    {roleLabel[account.role]}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.noticeDate}>
+                상태: {account.status === "active" ? "활성" : "비활성"}
+                {isCurrentAccount ? " · 현재 로그인 계정" : ""}
+              </Text>
+              <View style={styles.roleActionRow}>
+                <Pressable
+                  disabled={isCurrentAccount || account.role === "customer"}
+                  onPress={() => onChangeRole(account.id, "customer")}
+                  style={[
+                    styles.roleActionButton,
+                    account.role === "customer" && styles.roleActionButtonActive,
+                    isCurrentAccount && styles.roleActionButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.roleActionText}>거래처 지정</Text>
+                </Pressable>
+                <Pressable
+                  disabled={isCurrentAccount || account.role === "admin"}
+                  onPress={() => onChangeRole(account.id, "admin")}
+                  style={[
+                    styles.roleActionButton,
+                    account.role === "admin" && styles.roleActionButtonActive,
+                    isCurrentAccount && styles.roleActionButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.roleActionText}>관리자 지정</Text>
+                </Pressable>
+              </View>
+            </View>
+          );
+        }}
+      />
+    </View>
   );
 }
 
@@ -5363,6 +5518,48 @@ const styles: any = StyleSheet.create({
   },
   dashboardTitle: { color: "#fff", fontSize: 23, fontWeight: "900" },
   dashboardCopy: { color: "#D9EDF0", fontSize: 12, marginTop: 7 },
+  roleIntro: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 13,
+    borderRadius: 14,
+    backgroundColor: palette.aqua,
+    marginBottom: 2,
+  },
+  roleIntroIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.surface,
+  },
+  accountRoleCard: {
+    padding: 14,
+    borderRadius: 15,
+    borderColor: palette.line,
+    borderWidth: 1,
+    backgroundColor: palette.surface,
+  },
+  roleBadge: { borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4 },
+  roleBadgeAdmin: { backgroundColor: "#F4EBFF" },
+  roleBadgeCustomer: { backgroundColor: palette.aqua },
+  roleBadgeText: { fontSize: 10, fontWeight: "900" },
+  roleActionRow: { flexDirection: "row", gap: 7, marginTop: 11 },
+  roleActionButton: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: palette.line,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.surface,
+  },
+  roleActionButtonActive: { borderColor: palette.teal, backgroundColor: palette.aqua },
+  roleActionButtonDisabled: { opacity: 0.5 },
+  roleActionText: { color: palette.teal, fontSize: 11, fontWeight: "900" },
   adminGrid: {
     minHeight: 104,
     borderRadius: 15,

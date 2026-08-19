@@ -218,6 +218,33 @@ app.get("/api/admin/onboarding", async (req, res) => {
   res.json({ applications: applications.rows, inquiries: inquiries.rows, passwordResetRequests: resetRequests.rows });
 });
 
+app.get("/api/admin/users", async (req, res) => {
+  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1) }).parse(req.query);
+  await requireAdmin(input.actorLoginId, input.actorPassword);
+  const users = await pool.query("SELECT u.id,u.login_id AS \"loginId\",u.name,u.company_id AS \"companyId\",c.name AS \"companyName\",u.role,u.status FROM mif_users u LEFT JOIN mif_companies c ON c.id=u.company_id ORDER BY CASE WHEN u.role='admin' THEN 0 ELSE 1 END,u.created_at DESC");
+  res.json(users.rows);
+});
+
+app.patch("/api/admin/users/:id/role", async (req, res) => {
+  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), role: z.enum(["admin", "customer"]) }).parse(req.body);
+  const actor = await requireAdmin(input.actorLoginId, input.actorPassword);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const target = await client.query("SELECT id,role,status FROM mif_users WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!target.rowCount) return res.status(404).json({ message: "계정을 찾을 수 없습니다." });
+    const user = target.rows[0] as { id: string; role: "admin" | "customer"; status: "active" | "inactive" };
+    if (actor.id === user.id && input.role !== "admin") return res.status(409).json({ message: "현재 로그인한 관리자의 권한은 해제할 수 없습니다." });
+    if (user.role === "admin" && input.role === "customer" && user.status === "active") {
+      const count = await client.query("SELECT COUNT(*)::int AS count FROM mif_users WHERE role='admin' AND status='active'");
+      if (count.rows[0].count <= 1) return res.status(409).json({ message: "활성 관리자가 최소 한 명은 필요합니다." });
+    }
+    const updated = await client.query("UPDATE mif_users SET role=$2,updated_at=NOW() WHERE id=$1 RETURNING id,login_id AS \"loginId\",name,company_id AS \"companyId\",role,status", [req.params.id, input.role]);
+    await client.query("COMMIT");
+    res.json({ user: updated.rows[0] });
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+});
+
 app.post("/api/admin/onboarding/:id/review", async (req, res) => {
   const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), decision: z.enum(["approved", "rejected"]), reviewNote: z.string().max(1000).optional() }).parse(req.body);
   const admin = await requireAdmin(input.actorLoginId, input.actorPassword);
