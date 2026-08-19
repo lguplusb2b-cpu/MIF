@@ -22,6 +22,72 @@ const allowedTransitions: Partial<Record<(typeof orderStatuses)[number], (typeof
   RECEIVED: "PAID", PAID: "CONFIRMED", CONFIRMED: "PREPARING", PREPARING: "SHIPPING", SHIPPING: "DELIVERED",
 };
 
+type SessionUserRow = {
+  id: string;
+  loginId: string;
+  name: string | null;
+  companyId: string | null;
+  companyName: string | null;
+  role: "admin" | "customer";
+  status: "active" | "inactive";
+};
+
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+async function issueSession(userId: string) {
+  const token = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  await pool.query("INSERT INTO mif_sessions (token,user_id,expires_at) VALUES ($1,$2,$3)", [token, userId, expiresAt]);
+  return { token, expiresAt };
+}
+
+function bearerToken(req: express.Request) {
+  const header = req.header("authorization") ?? "";
+  if (header.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
+  /** CSV 다운로드처럼 헤더를 붙일 수 없는 요청은 쿼리 토큰을 허용한다. */
+  const queryToken = req.query?.token;
+  return typeof queryToken === "string" ? queryToken.trim() : "";
+}
+
+async function sessionUser(req: express.Request): Promise<SessionUserRow | null> {
+  const token = bearerToken(req);
+  if (!token) return null;
+  const result = await pool.query(
+    "SELECT u.id,u.login_id AS \"loginId\",u.name,u.company_id AS \"companyId\",c.name AS \"companyName\",u.role,u.status FROM mif_sessions s JOIN mif_users u ON u.id=s.user_id LEFT JOIN mif_companies c ON c.id=u.company_id WHERE s.token=$1 AND s.expires_at > NOW() AND u.status='active'",
+    [token],
+  );
+  return (result.rows[0] as SessionUserRow | undefined) ?? null;
+}
+
+async function requireSession(req: express.Request) {
+  const user = await sessionUser(req);
+  if (!user) {
+    const error = new Error("로그인이 필요합니다.") as Error & { statusCode?: number };
+    error.statusCode = 401;
+    throw error;
+  }
+  return user;
+}
+
+async function requireAdminSession(req: express.Request) {
+  const user = await requireSession(req);
+  if (user.role !== "admin") {
+    const error = new Error("관리자 권한이 필요합니다.") as Error & { statusCode?: number };
+    error.statusCode = 403;
+    throw error;
+  }
+  return user;
+}
+
+/** 세션 토큰이 있으면 토큰으로, 없으면 기존 자격 증명 방식으로 관리자를 확인한다. */
+async function resolveAdmin(req: express.Request, credentials?: { actorLoginId?: string; actorPassword?: string }) {
+  if (bearerToken(req)) return requireAdminSession(req);
+  if (credentials?.actorLoginId && credentials.actorPassword) return requireAdmin(credentials.actorLoginId, credentials.actorPassword);
+  const error = new Error("관리자 인증 정보를 확인할 수 없습니다.") as Error & { statusCode?: number };
+  error.statusCode = 401;
+  throw error;
+}
+
 type NotificationInput = {
   title: string;
   body: string;
@@ -65,7 +131,44 @@ app.post("/api/auth/login", async (req, res) => {
   const user = result.rows[0];
   if (!user || user.status !== "active" || !(await verifyPassword(input.password, user.password_hash))) return res.status(401).json({ message: "아이디 또는 비밀번호가 올바르지 않습니다." });
   const { password_hash: _passwordHash, ...safeUser } = user;
-  res.json({ user: safeUser });
+  const session = await issueSession(user.id);
+  res.json({ user: safeUser, token: session.token, expiresAt: session.expiresAt });
+});
+
+app.get("/api/auth/session", async (req, res) => {
+  const user = await sessionUser(req);
+  if (!user) return res.status(401).json({ message: "세션이 만료되었습니다." });
+  res.json({ user });
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  const token = bearerToken(req);
+  if (token) await pool.query("DELETE FROM mif_sessions WHERE token=$1", [token]);
+  res.json({ success: true });
+});
+
+app.patch("/api/auth/password", async (req, res) => {
+  const user = await sessionUser(req);
+  if (!user) return res.status(401).json({ message: "로그인이 필요합니다." });
+  const input = z
+    .object({
+      currentPassword: z.string().min(1).max(255),
+      newPassword: z.string().min(4).max(255),
+    })
+    .parse(req.body);
+  const result = await pool.query("SELECT password_hash FROM mif_users WHERE id=$1", [user.id]);
+  const row = result.rows[0];
+  if (!row || !(await verifyPassword(input.currentPassword, row.password_hash)))
+    return res.status(401).json({ message: "현재 비밀번호가 올바르지 않습니다." });
+  await pool.query("UPDATE mif_users SET password_hash=$1, updated_at=NOW() WHERE id=$2", [
+    await hashPassword(input.newPassword),
+    user.id,
+  ]);
+  await pool.query("DELETE FROM mif_sessions WHERE user_id=$1 AND token <> $2", [
+    user.id,
+    bearerToken(req) ?? "",
+  ]);
+  res.json({ success: true });
 });
 
 app.post("/api/auth/password-reset-requests", async (req, res) => {
@@ -91,9 +194,79 @@ app.get("/api/products", async (_req, res) => {
   res.json(result.rows);
 });
 
+const productSelect = "id, category_id AS \"categoryId\", name, category_name AS \"categoryName\", spec, unit, base_price AS \"basePrice\", min_order_qty AS \"minOrderQty\", stock_status AS \"stockStatus\", status, image_key AS \"imageKey\", description, detail_image_keys AS \"detailImageKeys\", marketing_badges AS \"marketingBadges\", created_at AS \"createdAt\", updated_at AS \"updatedAt\"";
+
+async function loadOrders(companyId?: string | null) {
+  const orders = await pool.query(
+    `SELECT o.id, o.order_number AS "orderNumber", o.company_id AS "companyId", c.name AS "companyName", o.status, o.total_amount AS "totalAmount", o.delivery_method AS "deliveryMethod", o.desired_delivery_at AS "desiredDeliveryAt", o.courier_company AS "courierCompany", o.tracking_number AS "trackingNumber", o.truck_driver_phone AS "truckDriverPhone", o.address_snapshot AS "addressSnapshot", o.note, o.created_at AS "createdAt" FROM mif_orders o LEFT JOIN mif_companies c ON c.id=o.company_id ${companyId ? "WHERE o.company_id=$1" : ""} ORDER BY o.created_at DESC`,
+    companyId ? [companyId] : [],
+  );
+  if (!orders.rowCount) return [];
+  const items = await pool.query(
+    "SELECT order_id AS \"orderId\", product_id AS \"productId\", product_name AS \"productName\", spec, quantity, unit_price AS \"unitPrice\", amount FROM mif_order_items WHERE order_id = ANY($1::uuid[])",
+    [orders.rows.map((row) => row.id)],
+  );
+  return orders.rows.map((order) => ({ ...order, items: items.rows.filter((item) => item.orderId === order.id) }));
+}
+
+async function loadQaPosts(companyId?: string | null) {
+  const posts = await pool.query(
+    `SELECT id, company_id AS "companyId", author_id AS "authorId", author_name AS "authorName", title, content, is_private AS "isPrivate", is_answered AS "isAnswered", image_keys AS "imageKeys", created_at AS "createdAt" FROM mif_qa_posts ${companyId ? "WHERE company_id=$1" : ""} ORDER BY created_at DESC`,
+    companyId ? [companyId] : [],
+  );
+  if (!posts.rowCount) return [];
+  const comments = await pool.query(
+    "SELECT id, post_id AS \"postId\", author_name AS \"authorName\", is_admin AS \"isAdmin\", content, file_keys AS \"fileKeys\", created_at AS \"createdAt\" FROM mif_qa_comments WHERE post_id = ANY($1::uuid[]) ORDER BY created_at",
+    [posts.rows.map((row) => row.id)],
+  );
+  return posts.rows.map((post) => ({ ...post, comments: comments.rows.filter((comment) => comment.postId === post.id) }));
+}
+
+app.get("/api/sync/snapshot", async (req, res) => {
+  const user = await requireSession(req);
+  const isAdmin = user.role === "admin";
+  const companyScope = isAdmin ? null : user.companyId;
+  const [products, categories, banks, notices, addresses, notifications] = await Promise.all([
+    pool.query(`SELECT ${productSelect} FROM mif_products ${isAdmin ? "" : "WHERE status='active'"} ORDER BY created_at DESC`),
+    pool.query("SELECT id,name,sort_order AS \"sortOrder\",created_at AS \"createdAt\" FROM mif_categories ORDER BY sort_order,name"),
+    pool.query("SELECT id,bank_name AS \"bankName\",account_number AS \"accountNumber\",account_holder AS \"accountHolder\",is_active AS \"isActive\" FROM mif_bank_accounts ORDER BY created_at DESC"),
+    isAdmin
+      ? pool.query("SELECT id,title,content,is_visible AS \"isVisible\",start_date AS \"startDate\",end_date AS \"endDate\",created_at AS \"createdAt\",updated_at AS \"updatedAt\" FROM mif_notices ORDER BY created_at DESC")
+      : pool.query("SELECT id,title,content,is_visible AS \"isVisible\",start_date AS \"startDate\",end_date AS \"endDate\",created_at AS \"createdAt\",updated_at AS \"updatedAt\" FROM mif_notices WHERE is_visible=TRUE ORDER BY created_at DESC"),
+    companyScope
+      ? pool.query("SELECT id,label,recipient,phone,postal_code AS \"postalCode\",address,address_detail AS \"addressDetail\",is_default AS \"isDefault\" FROM mif_addresses WHERE company_id=$1 ORDER BY is_default DESC,created_at DESC", [companyScope])
+      : Promise.resolve({ rows: [] as unknown[] }),
+    pool.query("SELECT id,title,body,notification_type AS \"type\",recipient_role AS \"recipientRole\",payload AS data,is_read AS \"isRead\",created_at AS \"createdAt\" FROM mif_in_app_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200", [user.id]),
+  ]);
+  const [orders, qaPosts] = await Promise.all([loadOrders(companyScope), loadQaPosts(companyScope)]);
+  const admin = isAdmin
+    ? await Promise.all([
+        pool.query("SELECT id,company_name AS \"companyName\",business_number AS \"businessNumber\",contact_name AS \"contactName\",phone,email,requested_login_id AS \"requestedLoginId\",business_document_key AS \"businessDocumentKey\",status,review_note AS \"reviewNote\",created_at AS \"createdAt\" FROM mif_signup_applications ORDER BY created_at DESC"),
+        pool.query("SELECT id,company_name AS \"companyName\",contact_name AS \"contactName\",phone,email,product_categories AS \"productCategories\",service_area AS \"serviceArea\",message,status,review_note AS \"reviewNote\",created_at AS \"createdAt\" FROM mif_vendor_inquiries ORDER BY created_at DESC"),
+        pool.query("SELECT id,login_id AS \"loginId\",company_name AS \"companyName\",contact_phone AS \"contactPhone\",message,status,created_at AS \"createdAt\" FROM mif_password_reset_requests ORDER BY created_at DESC"),
+      ])
+    : null;
+  res.json({
+    user,
+    syncedAt: new Date().toISOString(),
+    products: products.rows,
+    categories: categories.rows,
+    banks: banks.rows,
+    notices: notices.rows,
+    addresses: addresses.rows,
+    orders,
+    qaPosts,
+    notifications: notifications.rows,
+    signupApplications: admin ? admin[0].rows : [],
+    vendorInquiries: admin ? admin[1].rows : [],
+    passwordResetRequests: admin ? admin[2].rows : [],
+  });
+});
+
 const productInput = z.object({ name: z.string().min(1).max(128), categoryId: z.string().uuid().optional(), categoryName: z.string().max(64).optional(), spec: z.string().max(128).optional(), unit: z.string().max(32).optional(), basePrice: z.number().int().nonnegative(), minOrderQty: z.number().int().positive().default(1), stockStatus: z.enum(["in_stock", "out_of_stock"]).default("in_stock"), description: z.string().max(10000).optional(), imageKey: z.string().max(512).optional(), detailImageKeys: z.array(z.string()).max(20).default([]), marketingBadges: z.array(z.string()).max(10).default([]), featuredPriority: z.number().int().positive().optional() });
 
 app.post("/api/products", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = productInput.parse(req.body);
   const id = randomUUID();
   const client = await pool.connect();
@@ -107,6 +280,7 @@ app.post("/api/products", async (req, res) => {
 });
 
 app.patch("/api/products/:id", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = productInput.parse(req.body);
   const result = await pool.query("UPDATE mif_products SET category_id=$2, category_name=$3, name=$4, spec=$5, unit=$6, base_price=$7, min_order_qty=$8, stock_status=$9, image_key=$10, description=$11, detail_image_keys=$12, marketing_badges=$13, updated_at=NOW() WHERE id=$1 RETURNING id, category_id AS \"categoryId\", name, category_name AS \"categoryName\", spec, unit, base_price AS \"basePrice\", min_order_qty AS \"minOrderQty\", stock_status AS \"stockStatus\", image_key AS \"imageKey\", description, detail_image_keys AS \"detailImageKeys\", marketing_badges AS \"marketingBadges\", updated_at AS \"updatedAt\"", [req.params.id, input.categoryId ?? null, input.categoryName ?? null, input.name, input.spec ?? null, input.unit ?? null, input.basePrice, input.minOrderQty, input.stockStatus, input.imageKey ?? null, input.description ?? null, JSON.stringify(input.detailImageKeys), JSON.stringify(input.marketingBadges)]);
   if (!result.rowCount) return res.status(404).json({ message: "상품을 찾을 수 없습니다." });
@@ -114,6 +288,7 @@ app.patch("/api/products/:id", async (req, res) => {
 });
 
 app.delete("/api/products/:id", async (req, res) => {
+  await resolveAdmin(req, req.query as Record<string, string>);
   const result = await pool.query("UPDATE mif_products SET status='inactive',updated_at=NOW() WHERE id=$1 RETURNING id", [req.params.id]);
   if (!result.rowCount) return res.status(404).json({ message: "상품을 찾을 수 없습니다." });
   res.status(204).end();
@@ -125,19 +300,21 @@ app.get("/api/categories", async (_req, res) => {
 });
 
 app.post("/api/categories", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ name: z.string().min(1).max(64), sortOrder: z.number().int().nonnegative().default(0) }).parse(req.body);
   const result = await pool.query("INSERT INTO mif_categories (id,name,sort_order) VALUES ($1,$2,$3) RETURNING id,name,sort_order AS \"sortOrder\",created_at AS \"createdAt\"", [randomUUID(), input.name, input.sortOrder]);
   res.status(201).json(result.rows[0]);
 });
 
 app.patch("/api/categories/:id", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ name: z.string().min(1).max(64), sortOrder: z.number().int().nonnegative().default(0) }).parse(req.body);
   const result = await pool.query("UPDATE mif_categories SET name=$2,sort_order=$3 WHERE id=$1 RETURNING id,name,sort_order AS \"sortOrder\"", [req.params.id, input.name, input.sortOrder]);
   if (!result.rowCount) return res.status(404).json({ message: "카테고리를 찾을 수 없습니다." });
   res.json(result.rows[0]);
 });
 
-app.delete("/api/categories/:id", async (req, res) => { await pool.query("DELETE FROM mif_categories WHERE id=$1", [req.params.id]); res.status(204).end(); });
+app.delete("/api/categories/:id", async (req, res) => { await resolveAdmin(req, req.query as Record<string, string>); await pool.query("DELETE FROM mif_categories WHERE id=$1", [req.params.id]); res.status(204).end(); });
 
 app.get("/api/bank-accounts", async (_req, res) => {
   const result = await pool.query("SELECT id,bank_name AS \"bankName\",account_number AS \"accountNumber\",account_holder AS \"accountHolder\",is_active AS \"isActive\" FROM mif_bank_accounts ORDER BY created_at DESC");
@@ -145,19 +322,21 @@ app.get("/api/bank-accounts", async (_req, res) => {
 });
 
 app.post("/api/bank-accounts", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ bankName: z.string().min(1).max(64), accountNumber: z.string().min(1).max(128), accountHolder: z.string().min(1).max(128), isActive: z.boolean().default(true) }).parse(req.body);
   const result = await pool.query("INSERT INTO mif_bank_accounts (id,bank_name,account_number,account_holder,is_active) VALUES ($1,$2,$3,$4,$5) RETURNING id,bank_name AS \"bankName\",account_number AS \"accountNumber\",account_holder AS \"accountHolder\",is_active AS \"isActive\"", [randomUUID(), input.bankName, input.accountNumber, input.accountHolder, input.isActive]);
   res.status(201).json(result.rows[0]);
 });
 
 app.patch("/api/bank-accounts/:id", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ bankName: z.string().min(1).max(64), accountNumber: z.string().min(1).max(128), accountHolder: z.string().min(1).max(128), isActive: z.boolean() }).parse(req.body);
   const result = await pool.query("UPDATE mif_bank_accounts SET bank_name=$2,account_number=$3,account_holder=$4,is_active=$5,updated_at=NOW() WHERE id=$1 RETURNING id,bank_name AS \"bankName\",account_number AS \"accountNumber\",account_holder AS \"accountHolder\",is_active AS \"isActive\"", [req.params.id, input.bankName, input.accountNumber, input.accountHolder, input.isActive]);
   if (!result.rowCount) return res.status(404).json({ message: "결제 계좌를 찾을 수 없습니다." });
   res.json(result.rows[0]);
 });
 
-app.delete("/api/bank-accounts/:id", async (req, res) => { await pool.query("DELETE FROM mif_bank_accounts WHERE id=$1", [req.params.id]); res.status(204).end(); });
+app.delete("/api/bank-accounts/:id", async (req, res) => { await resolveAdmin(req, req.query as Record<string, string>); await pool.query("DELETE FROM mif_bank_accounts WHERE id=$1", [req.params.id]); res.status(204).end(); });
 
 app.get("/api/orders", async (req, res) => {
   const companyId = z.string().uuid().optional().safeParse(req.query.companyId).data;
@@ -166,7 +345,14 @@ app.get("/api/orders", async (req, res) => {
 });
 
 app.post("/api/orders", async (req, res) => {
-  const input = z.object({ companyId: z.string().uuid(), userId: z.string().uuid().optional(), addressId: z.string().uuid().optional(), addressSnapshot: z.record(z.string(), z.unknown()).optional(), note: z.string().max(2000).optional(), deliveryMethod: z.enum(["courier", "truck", "pickup"]), items: z.array(z.object({ productId: z.string().uuid().optional(), productName: z.string().min(1), spec: z.string().optional(), quantity: z.number().int().positive(), unitPrice: z.number().int().nonnegative() })).min(1) }).parse(req.body);
+  const actor = await sessionUser(req);
+  if (actor && actor.role === "admin") return res.status(403).json({ message: "관리자 계정은 발주를 생성할 수 없습니다." });
+  const input = z.object({ companyId: z.string().uuid().optional(), userId: z.string().uuid().optional(), addressId: z.string().uuid().optional(), addressSnapshot: z.record(z.string(), z.unknown()).optional(), note: z.string().max(2000).optional(), desiredDeliveryAt: z.string().optional(), deliveryMethod: z.enum(["courier", "truck", "pickup"]), items: z.array(z.object({ productId: z.string().uuid().optional(), productName: z.string().min(1), spec: z.string().optional(), quantity: z.number().int().positive(), unitPrice: z.number().int().nonnegative() })).min(1) }).parse(req.body);
+  const companyId = actor?.companyId ?? input.companyId;
+  const userId = actor?.id ?? input.userId;
+  if (!companyId) return res.status(400).json({ message: "거래처 정보를 확인할 수 없습니다." });
+  const activeBank = await pool.query("SELECT 1 FROM mif_bank_accounts WHERE is_active=TRUE LIMIT 1");
+  if (!activeBank.rowCount) return res.status(409).json({ message: "활성 결제 계좌가 등록되어야 발주할 수 있습니다." });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -174,11 +360,11 @@ app.post("/api/orders", async (req, res) => {
     const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
     const sequence = await client.query("SELECT COUNT(*)::int AS count FROM mif_orders");
     const orderNumber = `MIF-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${String(sequence.rows[0].count + 1).padStart(4, "0")}`;
-    await client.query("INSERT INTO mif_orders (id, order_number, company_id, user_id, address_id, address_snapshot, note, delivery_method, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", [orderId, orderNumber, input.companyId, input.userId ?? null, input.addressId ?? null, input.addressSnapshot ?? null, input.note ?? null, input.deliveryMethod, totalAmount]);
+    await client.query("INSERT INTO mif_orders (id, order_number, company_id, user_id, address_id, address_snapshot, note, delivery_method, desired_delivery_at, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [orderId, orderNumber, companyId, userId ?? null, input.addressId ?? null, input.addressSnapshot ?? null, input.note ?? null, input.deliveryMethod, input.desiredDeliveryAt ?? null, totalAmount]);
     for (const item of input.items) await client.query("INSERT INTO mif_order_items (id, order_id, product_id, product_name, spec, quantity, unit_price, amount, delivery_method) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", [randomUUID(), orderId, item.productId ?? null, item.productName, item.spec ?? null, item.quantity, item.unitPrice, item.quantity * item.unitPrice, input.deliveryMethod]);
     await client.query("COMMIT");
-    void createAndDispatchNotification({ title: "새 발주가 접수되었습니다", body: `${orderNumber} · 관리자 확인이 필요합니다.`, type: "order", recipientRole: "admin", companyId: input.companyId, payload: { event: "order-created", orderId, orderNumber } });
-    if (input.userId) void createAndDispatchNotification({ title: "주문이 접수되었습니다", body: `${orderNumber} · 발주 접수 완료`, type: "order", recipientUserId: input.userId, companyId: input.companyId, payload: { event: "order-created", orderId, orderNumber } });
+    void createAndDispatchNotification({ title: "새 발주가 접수되었습니다", body: `${orderNumber} · 관리자 확인이 필요합니다.`, type: "order", recipientRole: "admin", companyId, payload: { event: "order-created", orderId, orderNumber } });
+    if (userId) void createAndDispatchNotification({ title: "주문이 접수되었습니다", body: `${orderNumber} · 발주 접수 완료`, type: "order", recipientUserId: userId, companyId, payload: { event: "order-created", orderId, orderNumber } });
     res.status(201).json({ id: orderId, orderNumber, status: "RECEIVED", totalAmount });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -187,6 +373,7 @@ app.post("/api/orders", async (req, res) => {
 });
 
 app.patch("/api/orders/:id/status", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ status: z.enum(orderStatuses), courierCompany: z.string().max(64).optional(), trackingNumber: z.string().max(128).optional(), truckDriverPhone: z.string().max(32).optional() }).parse(req.body);
   const current = await pool.query("SELECT status,company_id,user_id,order_number FROM mif_orders WHERE id = $1", [req.params.id]);
   if (!current.rowCount) return res.status(404).json({ message: "주문을 찾을 수 없습니다." });
@@ -208,8 +395,8 @@ app.post("/api/onboarding/signup", upload.single("businessDocument"), async (req
 });
 
 app.get("/api/admin/onboarding", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1) }).parse(req.query);
-  await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional() }).parse(req.query);
+  await resolveAdmin(req, input);
   const [applications, inquiries, resetRequests] = await Promise.all([
     pool.query("SELECT id,company_name AS \"companyName\",business_number AS \"businessNumber\",contact_name AS \"contactName\",phone,email,requested_login_id AS \"requestedLoginId\",business_document_key AS \"businessDocumentKey\",status,review_note AS \"reviewNote\",created_at AS \"createdAt\" FROM mif_signup_applications ORDER BY created_at DESC"),
     pool.query("SELECT id,company_name AS \"companyName\",contact_name AS \"contactName\",phone,email,product_categories AS \"productCategories\",service_area AS \"serviceArea\",message,status,review_note AS \"reviewNote\",created_at AS \"createdAt\" FROM mif_vendor_inquiries ORDER BY created_at DESC"),
@@ -219,15 +406,15 @@ app.get("/api/admin/onboarding", async (req, res) => {
 });
 
 app.get("/api/admin/users", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1) }).parse(req.query);
-  await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional() }).parse(req.query);
+  await resolveAdmin(req, input);
   const users = await pool.query("SELECT u.id,u.login_id AS \"loginId\",u.name,u.company_id AS \"companyId\",c.name AS \"companyName\",u.role,u.status FROM mif_users u LEFT JOIN mif_companies c ON c.id=u.company_id ORDER BY CASE WHEN u.role='admin' THEN 0 ELSE 1 END,u.created_at DESC");
   res.json(users.rows);
 });
 
 app.patch("/api/admin/users/:id/role", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), role: z.enum(["admin", "customer"]) }).parse(req.body);
-  const actor = await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional(), role: z.enum(["admin", "customer"]) }).parse(req.body);
+  const actor = await resolveAdmin(req, input);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -246,8 +433,8 @@ app.patch("/api/admin/users/:id/role", async (req, res) => {
 });
 
 app.post("/api/admin/onboarding/:id/review", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), decision: z.enum(["approved", "rejected"]), reviewNote: z.string().max(1000).optional() }).parse(req.body);
-  const admin = await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional(), decision: z.enum(["approved", "rejected"]), reviewNote: z.string().max(1000).optional() }).parse(req.body);
+  const admin = await resolveAdmin(req, input);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -280,6 +467,7 @@ app.get("/api/notices", async (_req, res) => {
 });
 
 app.post("/api/notices", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ title: z.string().min(1).max(255), content: z.string().min(1).max(10000), isVisible: z.boolean().default(true), startDate: z.string().date().optional(), endDate: z.string().date().optional() }).parse(req.body);
   const id = randomUUID();
   const result = await pool.query("INSERT INTO mif_notices (id,title,content,is_visible,start_date,end_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,title,content,is_visible AS \"isVisible\",start_date AS \"startDate\",end_date AS \"endDate\",created_at AS \"createdAt\"", [id, input.title, input.content, input.isVisible, input.startDate ?? null, input.endDate ?? null]);
@@ -294,26 +482,31 @@ app.get("/api/qa-posts", async (req, res) => {
 });
 
 app.post("/api/qa-posts", async (req, res) => {
-  const input = z.object({ companyId: z.string().uuid(), authorId: z.string().uuid().optional(), authorName: z.string().min(1).max(128), title: z.string().min(1).max(255), content: z.string().min(1).max(10000), isPrivate: z.boolean().default(false), imageKeys: z.array(z.string()).max(5).default([]) }).parse(req.body);
+  const input = z.object({ companyId: z.string().uuid().optional(), authorId: z.string().uuid().optional(), authorName: z.string().min(1).max(128), title: z.string().min(1).max(255), content: z.string().min(1).max(10000), isPrivate: z.boolean().default(false), imageKeys: z.array(z.string()).max(5).default([]) }).parse(req.body);
+  const actor = await sessionUser(req);
+  const companyId = actor?.companyId ?? input.companyId;
+  if (!companyId) return res.status(400).json({ message: "거래처 정보를 확인할 수 없습니다." });
   const id = randomUUID();
-  const result = await pool.query("INSERT INTO mif_qa_posts (id,company_id,author_id,author_name,title,content,is_private,image_keys) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,company_id AS \"companyId\",author_id AS \"authorId\",author_name AS \"authorName\",title,content,is_private AS \"isPrivate\",is_answered AS \"isAnswered\",image_keys AS \"imageKeys\",created_at AS \"createdAt\"", [id, input.companyId, input.authorId ?? null, input.authorName, input.title, input.content, input.isPrivate, JSON.stringify(input.imageKeys)]);
-  void createAndDispatchNotification({ title: "새 Q&A 문의가 접수되었습니다", body: input.title, type: "qa", recipientRole: "admin", companyId: input.companyId, payload: { event: "qa-created", qaId: id } });
+  const result = await pool.query("INSERT INTO mif_qa_posts (id,company_id,author_id,author_name,title,content,is_private,image_keys) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,company_id AS \"companyId\",author_id AS \"authorId\",author_name AS \"authorName\",title,content,is_private AS \"isPrivate\",is_answered AS \"isAnswered\",image_keys AS \"imageKeys\",created_at AS \"createdAt\"", [id, companyId, actor?.id ?? input.authorId ?? null, input.authorName, input.title, input.content, input.isPrivate, JSON.stringify(input.imageKeys)]);
+  void createAndDispatchNotification({ title: "새 Q&A 문의가 접수되었습니다", body: input.title, type: "qa", recipientRole: "admin", companyId, payload: { event: "qa-created", qaId: id } });
   res.status(201).json(result.rows[0]);
 });
 
 app.post("/api/qa-posts/:id/comments", async (req, res) => {
   const input = z.object({ authorId: z.string().uuid().optional(), authorName: z.string().min(1).max(128), isAdmin: z.boolean().default(false), content: z.string().min(1).max(10000), fileKeys: z.array(z.string()).max(5).default([]) }).parse(req.body);
+  const actor = await sessionUser(req);
+  const isAdminComment = actor ? actor.role === "admin" : input.isAdmin;
   const id = randomUUID();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const post = await client.query("SELECT author_id,company_id,title FROM mif_qa_posts WHERE id=$1", [req.params.id]);
     if (!post.rowCount) return res.status(404).json({ message: "Q&A 문의를 찾을 수 없습니다." });
-    const comment = await client.query("INSERT INTO mif_qa_comments (id,post_id,author_id,author_name,is_admin,content,file_keys) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id,post_id AS \"postId\",author_name AS \"authorName\",is_admin AS \"isAdmin\",content,file_keys AS \"fileKeys\",created_at AS \"createdAt\"", [id, req.params.id, input.authorId ?? null, input.authorName, input.isAdmin, input.content, JSON.stringify(input.fileKeys)]);
-    if (input.isAdmin) await client.query("UPDATE mif_qa_posts SET is_answered=TRUE, updated_at=NOW() WHERE id=$1", [req.params.id]);
+    const comment = await client.query("INSERT INTO mif_qa_comments (id,post_id,author_id,author_name,is_admin,content,file_keys) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id,post_id AS \"postId\",author_name AS \"authorName\",is_admin AS \"isAdmin\",content,file_keys AS \"fileKeys\",created_at AS \"createdAt\"", [id, req.params.id, actor?.id ?? input.authorId ?? null, input.authorName, isAdminComment, input.content, JSON.stringify(input.fileKeys)]);
+    if (isAdminComment) await client.query("UPDATE mif_qa_posts SET is_answered=TRUE, updated_at=NOW() WHERE id=$1", [req.params.id]);
     await client.query("COMMIT");
-    if (input.isAdmin && post.rows[0].author_id) void createAndDispatchNotification({ title: "Q&A 답변이 등록되었습니다", body: post.rows[0].title, type: "qa", recipientUserId: post.rows[0].author_id, companyId: post.rows[0].company_id, payload: { event: "qa-answer", qaId: req.params.id } });
-    if (!input.isAdmin) void createAndDispatchNotification({ title: "Q&A에 새 댓글이 등록되었습니다", body: post.rows[0].title, type: "qa", recipientRole: "admin", companyId: post.rows[0].company_id, payload: { event: "qa-comment", qaId: req.params.id } });
+    if (isAdminComment && post.rows[0].author_id) void createAndDispatchNotification({ title: "Q&A 답변이 등록되었습니다", body: post.rows[0].title, type: "qa", recipientUserId: post.rows[0].author_id, companyId: post.rows[0].company_id, payload: { event: "qa-answer", qaId: req.params.id } });
+    if (!isAdminComment) void createAndDispatchNotification({ title: "Q&A에 새 댓글이 등록되었습니다", body: post.rows[0].title, type: "qa", recipientRole: "admin", companyId: post.rows[0].company_id, payload: { event: "qa-comment", qaId: req.params.id } });
     res.status(201).json(comment.rows[0]);
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
@@ -354,14 +547,28 @@ app.get("/api/addresses", async (req, res) => {
   res.json(result.rows);
 });
 
-const addressInput = z.object({ companyId: z.string().uuid(), label: z.string().min(1).max(64), recipient: z.string().min(1).max(64), phone: z.string().min(9).max(32), postalCode: z.string().regex(/^\d{5}$/).optional().or(z.literal("")), address: z.string().min(1).max(1000), addressDetail: z.string().max(500).optional(), isDefault: z.boolean().default(false) });
+const addressInput = z.object({ companyId: z.string().uuid().optional(), label: z.string().min(1).max(64), recipient: z.string().min(1).max(64), phone: z.string().min(9).max(32), postalCode: z.string().regex(/^\d{5}$/).optional().or(z.literal("")), address: z.string().min(1).max(1000), addressDetail: z.string().max(500).optional(), isDefault: z.boolean().default(false) });
+
+/** 세션의 소속 거래처를 우선 사용하고, 세션이 없으면 요청 본문 값으로 대체한다. */
+async function resolveCompanyId(req: express.Request, fallback?: string) {
+  const actor = await sessionUser(req);
+  const companyId = actor?.companyId ?? fallback;
+  if (!companyId) {
+    const error = new Error("거래처 정보를 확인할 수 없습니다.") as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
+  }
+  return companyId;
+}
+
 app.post("/api/addresses", async (req, res) => {
   const input = addressInput.parse(req.body);
+  const companyId = await resolveCompanyId(req, input.companyId);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    if (input.isDefault) await client.query("UPDATE mif_addresses SET is_default=FALSE WHERE company_id=$1", [input.companyId]);
-    const result = await client.query("INSERT INTO mif_addresses (id,company_id,label,recipient,phone,postal_code,address,address_detail,is_default) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,label,recipient,phone,postal_code AS \"postalCode\",address,address_detail AS \"addressDetail\",is_default AS \"isDefault\"", [randomUUID(), input.companyId, input.label, input.recipient, input.phone, input.postalCode || null, input.address, input.addressDetail ?? null, input.isDefault]);
+    if (input.isDefault) await client.query("UPDATE mif_addresses SET is_default=FALSE WHERE company_id=$1", [companyId]);
+    const result = await client.query("INSERT INTO mif_addresses (id,company_id,label,recipient,phone,postal_code,address,address_detail,is_default) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,label,recipient,phone,postal_code AS \"postalCode\",address,address_detail AS \"addressDetail\",is_default AS \"isDefault\"", [randomUUID(), companyId, input.label, input.recipient, input.phone, input.postalCode || null, input.address, input.addressDetail ?? null, input.isDefault]);
     await client.query("COMMIT");
     res.status(201).json(result.rows[0]);
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
@@ -369,28 +576,45 @@ app.post("/api/addresses", async (req, res) => {
 
 app.patch("/api/addresses/:id", async (req, res) => {
   const input = addressInput.parse(req.body);
+  const companyId = await resolveCompanyId(req, input.companyId);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    if (input.isDefault) await client.query("UPDATE mif_addresses SET is_default=FALSE WHERE company_id=$1", [input.companyId]);
-    const result = await client.query("UPDATE mif_addresses SET label=$3,recipient=$4,phone=$5,postal_code=$6,address=$7,address_detail=$8,is_default=$9 WHERE id=$1 AND company_id=$2 RETURNING id,label,recipient,phone,postal_code AS \"postalCode\",address,address_detail AS \"addressDetail\",is_default AS \"isDefault\"", [req.params.id, input.companyId, input.label, input.recipient, input.phone, input.postalCode || null, input.address, input.addressDetail ?? null, input.isDefault]);
+    if (input.isDefault) await client.query("UPDATE mif_addresses SET is_default=FALSE WHERE company_id=$1", [companyId]);
+    const result = await client.query("UPDATE mif_addresses SET label=$3,recipient=$4,phone=$5,postal_code=$6,address=$7,address_detail=$8,is_default=$9 WHERE id=$1 AND company_id=$2 RETURNING id,label,recipient,phone,postal_code AS \"postalCode\",address,address_detail AS \"addressDetail\",is_default AS \"isDefault\"", [req.params.id, companyId, input.label, input.recipient, input.phone, input.postalCode || null, input.address, input.addressDetail ?? null, input.isDefault]);
     if (!result.rowCount) return res.status(404).json({ message: "배송지를 찾을 수 없습니다." });
     await client.query("COMMIT");
     res.json(result.rows[0]);
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
 
-app.delete("/api/addresses/:id", async (req, res) => { await pool.query("DELETE FROM mif_addresses WHERE id=$1", [req.params.id]); res.status(204).end(); });
+app.delete("/api/addresses/:id", async (req, res) => {
+  const actor = await sessionUser(req);
+  const target = await pool.query("SELECT company_id FROM mif_addresses WHERE id=$1", [req.params.id]);
+  if (!target.rowCount) return res.status(404).json({ message: "배송지를 찾을 수 없습니다." });
+  // 관리자는 모든 배송지를 정리할 수 있고, 거래처는 자기 소속 배송지만 삭제할 수 있다.
+  if (actor && actor.role !== "admin" && actor.companyId !== target.rows[0].company_id) {
+    return res.status(403).json({ message: "다른 거래처의 배송지는 삭제할 수 없습니다." });
+  }
+  await pool.query("DELETE FROM mif_addresses WHERE id=$1", [req.params.id]);
+  res.status(204).end();
+});
 
 app.delete("/api/orders/:id", async (req, res) => {
+  const actor = await sessionUser(req);
+  const target = await pool.query("SELECT company_id, status FROM mif_orders WHERE id=$1", [req.params.id]);
+  if (!target.rowCount) return res.status(404).json({ message: "주문을 찾을 수 없습니다." });
+  if (actor && actor.role !== "admin" && actor.companyId !== target.rows[0].company_id) {
+    return res.status(403).json({ message: "다른 거래처의 주문은 삭제할 수 없습니다." });
+  }
   const result = await pool.query("DELETE FROM mif_orders WHERE id=$1 RETURNING id", [req.params.id]);
   if (!result.rowCount) return res.status(404).json({ message: "주문을 찾을 수 없습니다." });
   res.status(204).end();
 });
 
 app.get("/api/orders/export", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), status: z.enum(orderStatuses).optional(), from: z.string().date().optional(), to: z.string().date().optional() }).parse(req.query);
-  await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional(), token: z.string().min(1).optional(), status: z.enum(orderStatuses).optional(), from: z.string().date().optional(), to: z.string().date().optional() }).parse(req.query);
+  await resolveAdmin(req, input);
   const result = await pool.query("SELECT order_number,status,total_amount,delivery_method,courier_company,tracking_number,created_at FROM mif_orders WHERE ($1::text IS NULL OR status=$1) AND ($2::date IS NULL OR created_at::date >= $2) AND ($3::date IS NULL OR created_at::date <= $3) ORDER BY created_at DESC", [input.status ?? null, input.from ?? null, input.to ?? null]);
   const header = "주문번호,상태,금액,배송방법,택배사,송장번호,주문일";
   const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
@@ -401,28 +625,29 @@ app.get("/api/orders/export", async (req, res) => {
 });
 
 app.post("/api/admin/vendor-inquiries/:id/review", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), decision: z.enum(["approved", "rejected"]), reviewNote: z.string().max(1000).optional() }).parse(req.body);
-  await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional(), decision: z.enum(["approved", "rejected"]), reviewNote: z.string().max(1000).optional() }).parse(req.body);
+  await resolveAdmin(req, input);
   const result = await pool.query("UPDATE mif_vendor_inquiries SET status=$2,review_note=$3 WHERE id=$1 AND status='pending' RETURNING id,status,review_note AS \"reviewNote\"", [req.params.id, input.decision, input.reviewNote ?? null]);
   if (!result.rowCount) return res.status(409).json({ message: "대기 중인 입점 문의를 찾을 수 없습니다." });
   res.json(result.rows[0]);
 });
 
 app.post("/api/admin/password-reset-requests/:id/review", async (req, res) => {
-  const input = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1), status: z.enum(["completed", "rejected"]) }).parse(req.body);
-  await requireAdmin(input.actorLoginId, input.actorPassword);
+  const input = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional(), status: z.enum(["completed", "rejected"]) }).parse(req.body);
+  await resolveAdmin(req, input);
   const result = await pool.query("UPDATE mif_password_reset_requests SET status=$2,updated_at=NOW() WHERE id=$1 AND status='pending' RETURNING id,status", [req.params.id, input.status]);
   if (!result.rowCount) return res.status(409).json({ message: "대기 중인 재설정 요청을 찾을 수 없습니다." });
   res.json(result.rows[0]);
 });
 
 app.patch("/api/notices/:id", async (req, res) => {
+  await resolveAdmin(req, req.body);
   const input = z.object({ title: z.string().min(1).max(255), content: z.string().min(1).max(10000), isVisible: z.boolean(), startDate: z.string().date().optional(), endDate: z.string().date().optional() }).parse(req.body);
   const result = await pool.query("UPDATE mif_notices SET title=$2,content=$3,is_visible=$4,start_date=$5,end_date=$6,updated_at=NOW() WHERE id=$1 RETURNING id,title,content,is_visible AS \"isVisible\",start_date AS \"startDate\",end_date AS \"endDate\",updated_at AS \"updatedAt\"", [req.params.id, input.title, input.content, input.isVisible, input.startDate ?? null, input.endDate ?? null]);
   if (!result.rowCount) return res.status(404).json({ message: "공지를 찾을 수 없습니다." });
   res.json(result.rows[0]);
 });
-app.delete("/api/notices/:id", async (req, res) => { await pool.query("DELETE FROM mif_notices WHERE id=$1", [req.params.id]); res.status(204).end(); });
+app.delete("/api/notices/:id", async (req, res) => { await resolveAdmin(req, req.query as Record<string, string>); await pool.query("DELETE FROM mif_notices WHERE id=$1", [req.params.id]); res.status(204).end(); });
 
 app.get("/api/notifications", async (req, res) => {
   const userId = z.string().uuid().parse(req.query.userId);
@@ -437,8 +662,8 @@ app.post("/api/notifications/test", async (req, res) => {
 });
 
 app.post("/api/uploads/product-image", upload.single("file"), async (req, res) => {
-  const actor = z.object({ actorLoginId: z.string().min(1), actorPassword: z.string().min(1) }).parse(req.body);
-  await requireAdmin(actor.actorLoginId, actor.actorPassword);
+  const actor = z.object({ actorLoginId: z.string().min(1).optional(), actorPassword: z.string().min(1).optional() }).parse(req.body);
+  await resolveAdmin(req, actor);
   if (!req.file || !req.file.mimetype.startsWith("image/")) return res.status(400).json({ message: "이미지 파일을 첨부해 주세요." });
   res.status(201).json(await putPrivateDocument(req.file, "product-images"));
 });
@@ -446,7 +671,8 @@ app.post("/api/uploads/product-image", upload.single("file"), async (req, res) =
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(error);
   const message = error instanceof Error ? error.message : "MIF API 처리 중 오류가 발생했습니다.";
-  res.status(400).json({ message });
+  const statusCode = typeof (error as { statusCode?: number })?.statusCode === "number" ? (error as { statusCode: number }).statusCode : 400;
+  res.status(statusCode).json({ message });
 });
 
 app.listen(port, () => console.log(`MIF API server running on ${port}`));

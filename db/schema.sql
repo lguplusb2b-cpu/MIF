@@ -116,6 +116,15 @@ CREATE TABLE IF NOT EXISTS mif_order_items (
   delivery_method VARCHAR(32)
 );
 
+CREATE TABLE IF NOT EXISTS mif_sessions (
+  token VARCHAR(128) PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES mif_users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS mif_sessions_user_idx ON mif_sessions(user_id);
+
 CREATE TABLE IF NOT EXISTS mif_signup_applications (
   id UUID PRIMARY KEY,
   company_name VARCHAR(128) NOT NULL,

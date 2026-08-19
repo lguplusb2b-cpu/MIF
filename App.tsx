@@ -11,6 +11,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -24,7 +25,16 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { isMifApiConfigured, mifApi, type MifSessionUser } from "./src/api";
+import {
+  isMifApiConfigured,
+  getMifSessionToken,
+  MifApiError,
+  mifApi,
+  setMifSessionToken,
+  setMifUnauthorizedHandler,
+  type MifSessionUser,
+} from "./src/api";
+import { describeSyncState, mergeServerSnapshot } from "./src/sync-workflows";
 import {
   accountFromApprovedApplication,
   findPreviewAccount,
@@ -106,7 +116,13 @@ import {
   getPreviousPage,
   recordPageTransition,
 } from "./src/navigation-workflows";
-import { loadMifData, saveMifData } from "./src/storage";
+import {
+  clearSession,
+  loadMifData,
+  loadSession,
+  saveMifData,
+  saveSession,
+} from "./src/storage";
 import {
   addToCart,
   advanceOrder,
@@ -226,6 +242,7 @@ type Sheet =
   | "login"
   | "signup"
   | "password"
+  | "passwordChange"
   | "product"
   | "address"
   | "bank"
@@ -291,6 +308,15 @@ function MifApp() {
     message: string;
     tone: "error" | "success";
   } | null>(null);
+  const [syncedAt, setSyncedAt] = useState<string | undefined>();
+  const [serverOnline, setServerOnline] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const serverMode = isMifApiConfigured();
+  const syncState = describeSyncState({
+    configured: serverMode,
+    online: serverOnline,
+    syncedAt,
+  });
 
   const showFeedback = (
     title: string,
@@ -348,17 +374,114 @@ function MifApp() {
     return () => subscription.remove();
   }, [cartFeedback, page, sheet]);
 
-  useEffect(() => {
-    loadMifData().then((saved) => {
-      setData(saved);
-      setSheet("login");
-      setReady(true);
-    });
-  }, []);
   const persist = async (next: MifData) => {
     setData(next);
     await saveMifData(next);
   };
+
+  /** 서버 공용 데이터를 다시 받아 로컬 상태와 저장소를 갱신한다. */
+  const syncFromServer = async (options?: { silent?: boolean }) => {
+    if (!serverMode) return false;
+    if (!options?.silent) setSyncing(true);
+    try {
+      const snapshot = await mifApi.snapshot();
+      setServerOnline(true);
+      setSyncedAt(snapshot.syncedAt);
+      setData((current) => {
+        const merged = mergeServerSnapshot(current, snapshot);
+        void saveMifData(merged);
+        return merged;
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof MifApiError && error.status === 401) return false;
+      setServerOnline(false);
+      if (!options?.silent)
+        showFeedback(
+          "서버 동기화",
+          "서버에 연결할 수 없어 이 기기에 저장된 데이터를 표시합니다.",
+        );
+      return false;
+    } finally {
+      if (!options?.silent) setSyncing(false);
+    }
+  };
+
+  /**
+   * 서버 연동이 설정된 경우 서버 쓰기를 먼저 수행하고 최신 스냅샷으로 상태를 갱신한다.
+   * 서버 미설정이나 네트워크 오류 시 로컬 처리로 대체해 단일 기기 사용을 계속 지원한다.
+   */
+  const runServerFirst = async (
+    action: () => Promise<unknown>,
+    fallback: () => Promise<void>,
+  ) => {
+    if (!serverMode) {
+      await fallback();
+      return;
+    }
+    try {
+      await action();
+      await syncFromServer({ silent: true });
+    } catch (error) {
+      if (error instanceof MifApiError && error.status === 0) {
+        setServerOnline(false);
+        await fallback();
+        showFeedback(
+          "오프라인 저장",
+          "서버에 연결할 수 없어 이 기기에만 저장했습니다. 연결 후 다시 시도해 주세요.",
+        );
+        return;
+      }
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    setMifUnauthorizedHandler(() => {
+      setSession(null);
+      setSheet("login");
+      void clearSession();
+    });
+  }, []);
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      const saved = await loadMifData();
+      setData(saved);
+      const stored = serverMode ? await loadSession() : null;
+      if (stored) {
+        setMifSessionToken(stored.token);
+        try {
+          const current = await mifApi.session();
+          setSession({
+            id: current.user.id,
+            loginId: current.user.loginId,
+            name: current.user.name || current.user.loginId,
+            companyName: current.user.companyName,
+            role: current.user.role,
+            status: current.user.status,
+          });
+          setSheet(null);
+          await syncFromServer({ silent: true });
+        } catch {
+          setMifSessionToken("");
+          await clearSession();
+          setSheet("login");
+        }
+      } else {
+        setSheet("login");
+      }
+      setReady(true);
+    };
+    void bootstrap();
+  }, []);
+
+  /** 다중 기기 사용 시 다른 기기의 변경을 반영하기 위해 주기적으로 스냅샷을 갱신한다. */
+  useEffect(() => {
+    if (!serverMode || !session) return;
+    const timer = setInterval(() => void syncFromServer({ silent: true }), 20000);
+    return () => clearInterval(timer);
+  }, [serverMode, session]);
   useEffect(() => {
     setCart((current) => reconcileCartWithProducts(current, data.products));
   }, [data.products]);
@@ -445,6 +568,8 @@ function MifApp() {
     };
   }, [session]);
   const addProductToCart = (product: Product) => {
+    if (!session)
+      return showFeedback("로그인 필요", "로그인 후 발주할 수 있습니다.");
     if (isAdmin)
       return showFeedback(
         "관리자 발주 제한",
@@ -463,6 +588,8 @@ function MifApp() {
     });
   };
   const toggleFavorite = async (productId: string) => {
+    if (!session)
+      return showFeedback("로그인 필요", "로그인 후 찜 목록을 사용할 수 있습니다.");
     const exists = data.favorites.includes(productId);
     await persist({
       ...data,
@@ -470,6 +597,24 @@ function MifApp() {
         ? data.favorites.filter((id) => id !== productId)
         : [...data.favorites, productId],
     });
+  };
+
+  /** 서버 세션과 저장된 토큰을 함께 정리한 뒤 로그인 화면으로 돌아간다. */
+  const signOut = async () => {
+    if (serverMode) {
+      try {
+        await mifApi.logout();
+      } catch {
+        /* 서버 연결이 끊겨도 로컬 세션은 정리한다. */
+      }
+      setMifSessionToken("");
+      await clearSession();
+    }
+    setSession(null);
+    setCart([]);
+    setSyncedAt(undefined);
+    goHome();
+    setSheet("login");
   };
   const createOrder = async (input: {
     address: Address;
@@ -481,6 +626,30 @@ function MifApp() {
     try {
       if (isAdmin)
         throw new Error("관리자 계정은 주문을 생성할 수 없습니다.");
+      if (serverMode && serverOnline) {
+        const created = await mifApi.createOrder({
+          deliveryMethod: input.deliveryMethod,
+          addressId: input.address.id,
+          addressSnapshot: input.address as unknown as Record<string, unknown>,
+          desiredDeliveryAt: input.desiredDeliveryAt,
+          note: input.note,
+          items: cart.map((item) => ({
+            productName: item.name,
+            spec: item.spec,
+            quantity: item.quantity,
+            unitPrice: item.basePrice,
+          })),
+        });
+        setCart([]);
+        await syncFromServer({ silent: true });
+        setSheet(null);
+        goToPage("orders");
+        return showFeedback(
+          "주문 접수 완료",
+          `${created.orderNumber} 주문이 서버에 접수되었습니다.`,
+          "success",
+        );
+      }
       const order = createMifOrder({
         orders: data.orders,
         cart,
@@ -517,6 +686,19 @@ function MifApp() {
   const changeOrderStatus = async (order: Order, status?: OrderStatus) => {
     try {
       const changed = advanceOrder(order, status);
+      if (serverMode && serverOnline) {
+        await mifApi.updateOrderStatus(order.id, {
+          status: changed.status,
+          courierCompany: changed.courierCompany,
+          trackingNumber: changed.trackingNumber,
+          truckDriverPhone: changed.truckDriverPhone,
+        });
+        setSelectedOrder((current) =>
+          current?.id === changed.id ? changed : current,
+        );
+        await syncFromServer({ silent: true });
+        return;
+      }
       const next = {
         ...data,
         orders: data.orders.map((item) =>
@@ -822,6 +1004,30 @@ function MifApp() {
               setSheet("order");
             }}
             onBulk={bulkAdvanceOrders}
+            onExport={
+              isAdmin
+                ? () => {
+                    if (!isMifApiConfigured() || !getMifSessionToken()) {
+                      showFeedback(
+                        "주문 내보내기",
+                        "서버에 연결된 상태에서만 CSV를 내보낼 수 있습니다.",
+                      );
+                      return;
+                    }
+                    const url = mifApi.orderExportUrl({
+                      from: orderFrom ? orderFrom.slice(0, 10) : undefined,
+                      to: orderTo ? orderTo.slice(0, 10) : undefined,
+                    });
+                    if (!url) {
+                      showFeedback("주문 내보내기", "내보내기 주소를 만들 수 없습니다.");
+                      return;
+                    }
+                    Linking.openURL(url).catch(() =>
+                      showFeedback("주문 내보내기", "CSV 파일을 열지 못했습니다."),
+                    );
+                  }
+                : undefined
+            }
           />
         )}
         {page === "more" && (
@@ -832,10 +1038,7 @@ function MifApp() {
             onPage={goToPage}
             onSheet={setSheet}
             onLogout={() => {
-              setSession(null);
-              setCart([]);
-              goHome();
-              setSheet("login");
+              void signOut();
             }}
           />
         )}
@@ -847,11 +1050,9 @@ function MifApp() {
             onClose={goBack}
             onLogin={() => setSheet("login")}
             onPassword={() => setSheet("password")}
+            onChangePassword={() => setSheet("passwordChange")}
             onLogout={() => {
-              setSession(null);
-              setCart([]);
-              goHome();
-              setSheet("login");
+              void signOut();
             }}
           />
         )}
@@ -991,6 +1192,58 @@ function MifApp() {
                 ),
               })
             }
+            onOpenTarget={(item) => {
+              const orderNumber = item.data?.orderNumber;
+              if (item.type === "order") {
+                const target = orderNumber
+                  ? data.orders.find((order) => order.orderNumber === orderNumber)
+                  : undefined;
+                if (target) {
+                  setSelectedOrder(target);
+                  setSheet("order");
+                  return;
+                }
+                goToPage("orders");
+                return;
+              }
+              if (item.type === "notice") {
+                const notice = data.notices.find(
+                  (entry) => entry.title === item.body || entry.title === item.title,
+                );
+                if (notice) {
+                  setSelectedNotice(notice);
+                  setSheet("noticeDetail");
+                  return;
+                }
+                goToPage("notices");
+                return;
+              }
+              if (item.type === "qa") {
+                goToPage("qa");
+                return;
+              }
+              if (item.type === "onboarding" && isAdmin) goToPage("applications");
+            }}
+            onDelete={async (id) =>
+              await persist({
+                ...data,
+                notifications: data.notifications.filter((item) => item.id !== id),
+              })
+            }
+            onClearRead={async () => {
+              const removed = data.notifications.filter((item) => item.isRead).length;
+              await persist({
+                ...data,
+                notifications: data.notifications.filter((item) => !item.isRead),
+              });
+              showFeedback(
+                "알림 정리",
+                removed
+                  ? `읽은 알림 ${removed}건을 정리했습니다.`
+                  : "정리할 읽은 알림이 없습니다.",
+                removed ? "success" : "error",
+              );
+            }}
           />
         )}
         {page === "admin" && (
@@ -1131,6 +1384,18 @@ function MifApp() {
           try {
             const result = await mifApi.login(loginId, password);
             const user: MifSessionUser = result.user;
+            setMifSessionToken(result.token);
+            await saveSession({
+              token: result.token,
+              user: {
+                id: user.id,
+                loginId: user.loginId,
+                name: user.name || user.loginId,
+                companyName: user.companyName,
+                role: user.role,
+                status: user.status,
+              },
+            });
             setSession({
               id: user.id,
               loginId: user.loginId,
@@ -1140,6 +1405,7 @@ function MifApp() {
               status: user.status,
             });
             setSheet(null);
+            await syncFromServer({ silent: true });
             showFeedback("로그인 완료", "승인된 MIF 계정으로 로그인했습니다.", "success");
           } catch (error) {
             showFeedback(
@@ -1159,22 +1425,44 @@ function MifApp() {
             status: "pending",
             createdAt: new Date().toISOString(),
           };
-          const next = {
-            ...data,
-            signupApplications: [application, ...data.signupApplications],
-          };
-          await pushNotice(
-            next,
-            "거래처 가입 신청",
-            `${application.companyName} 가입 신청이 접수되었습니다.`,
-            "onboarding",
-            "admin",
-          );
-          setSheet("login");
-          Alert.alert(
-            "가입 신청 완료",
-            "관리자 승인 후 등록한 아이디와 비밀번호로 로그인할 수 있습니다.",
-          );
+          try {
+            await runServerFirst(
+              () =>
+                mifApi.createSignupApplication({
+                  companyName: application.companyName,
+                  businessNumber: application.businessNumber,
+                  contactName: application.contactName,
+                  phone: application.phone,
+                  email: application.email,
+                  requestedLoginId: application.requestedLoginId,
+                  requestedPassword: application.requestedPassword,
+                }),
+              async () => {
+                const next = {
+                  ...data,
+                  signupApplications: [application, ...data.signupApplications],
+                };
+                await pushNotice(
+                  next,
+                  "거래처 가입 신청",
+                  `${application.companyName} 가입 신청이 접수되었습니다.`,
+                  "onboarding",
+                  "admin",
+                );
+              },
+            );
+            setSheet("login");
+            showFeedback(
+              "가입 신청 완료",
+              "관리자 승인 후 등록한 아이디와 비밀번호로 로그인할 수 있습니다.",
+              "success",
+            );
+          } catch (error) {
+            showFeedback(
+              "가입 신청",
+              error instanceof Error ? error.message : "가입 신청을 접수하지 못했습니다.",
+            );
+          }
         }}
       />
       <PasswordSheet
@@ -1187,22 +1475,68 @@ function MifApp() {
             status: "pending",
             createdAt: new Date().toISOString(),
           };
-          const next = {
-            ...data,
-            passwordResetRequests: [request, ...data.passwordResetRequests],
-          };
-          await pushNotice(
-            next,
-            "비밀번호 재설정 요청",
-            `${request.companyName}(${request.loginId})에서 재설정을 요청했습니다.`,
-            "onboarding",
-            "admin",
-          );
-          setSheet("login");
-          Alert.alert(
-            "재설정 요청 접수",
-            "등록 정보를 확인한 뒤 관리자에게 재설정 요청이 전달되었습니다.",
-          );
+          try {
+            await runServerFirst(
+              () =>
+                mifApi.createPasswordResetRequest({
+                  loginId: request.loginId,
+                  companyName: request.companyName,
+                  contactPhone: request.contactPhone,
+                  message: request.message,
+                }),
+              async () => {
+                const next = {
+                  ...data,
+                  passwordResetRequests: [request, ...data.passwordResetRequests],
+                };
+                await pushNotice(
+                  next,
+                  "비밀번호 재설정 요청",
+                  `${request.companyName}(${request.loginId})에서 재설정을 요청했습니다.`,
+                  "onboarding",
+                  "admin",
+                );
+              },
+            );
+            setSheet("login");
+            showFeedback(
+              "재설정 요청 접수",
+              "등록 정보를 확인한 뒤 관리자에게 재설정 요청이 전달되었습니다.",
+              "success",
+            );
+          } catch (error) {
+            showFeedback(
+              "재설정 요청",
+              error instanceof Error ? error.message : "요청을 접수하지 못했습니다.",
+            );
+          }
+        }}
+      />
+      <PasswordChangeSheet
+        visible={sheet === "passwordChange"}
+        onClose={() => setSheet(null)}
+        onSubmit={async (input) => {
+          if (!isMifApiConfigured() || !getMifSessionToken()) {
+            showFeedback(
+              "비밀번호 변경",
+              "서버에 연결된 상태에서만 비밀번호를 변경할 수 있습니다.",
+            );
+            return;
+          }
+          try {
+            await mifApi.changePassword(input);
+            setSheet(null);
+            showFeedback(
+              "비밀번호 변경 완료",
+              "새 비밀번호로 변경했습니다. 다른 기기는 다시 로그인해야 합니다.",
+              "success",
+            );
+          } catch (error) {
+            showFeedback(
+              "비밀번호 변경",
+              error instanceof Error ? error.message : "비밀번호를 변경하지 못했습니다.",
+            );
+          }
         }}
       />
       <ProductSheet
@@ -1213,7 +1547,29 @@ function MifApp() {
         onClose={() => setSheet(null)}
         onSave={async (product) => {
           try {
-            await persist(saveProduct(data, product, productCategories));
+            const localSave = () => persist(saveProduct(data, product, productCategories));
+            const exists = data.products.some((item) => item.id === product.id);
+            const payload = {
+              name: product.name,
+              categoryId: product.categoryId,
+              categoryName: product.categoryName,
+              spec: product.spec,
+              unit: product.unit,
+              basePrice: product.basePrice,
+              minOrderQty: product.minOrderQty,
+              stockStatus: product.stockStatus,
+              description: product.description,
+              imageKey: product.imageUri,
+              detailImageKeys: product.detailImageUris,
+              marketingBadges: product.badges,
+            };
+            await runServerFirst(
+              () =>
+                exists
+                  ? mifApi.updateProduct(product.id, payload)
+                  : mifApi.createProduct(payload),
+              localSave,
+            );
             setEditingProduct(undefined);
             setSheet(null);
           } catch (error) {
@@ -1224,16 +1580,26 @@ function MifApp() {
           }
         }}
         onDelete={async (productId) => {
-          const next = {
-            ...data,
-            products: data.products.filter((item) => item.id !== productId),
-            favorites: data.favorites.filter((id) => id !== productId),
-          };
-          setCart((current) => current.filter((item) => item.id !== productId));
-          await persist(next);
-          setEditingProduct(undefined);
-          setSheet(null);
-          showFeedback("상품 삭제 완료", "상품과 장바구니·찜 연결 정보를 정리했습니다.", "success");
+          try {
+            setCart((current) => current.filter((item) => item.id !== productId));
+            await runServerFirst(
+              () => mifApi.deleteProduct(productId),
+              () =>
+                persist({
+                  ...data,
+                  products: data.products.filter((item) => item.id !== productId),
+                  favorites: data.favorites.filter((id) => id !== productId),
+                }),
+            );
+            setEditingProduct(undefined);
+            setSheet(null);
+            showFeedback("상품 삭제 완료", "상품과 장바구니·찜 연결 정보를 정리했습니다.", "success");
+          } catch (error) {
+            showFeedback(
+              "상품 삭제",
+              error instanceof Error ? error.message : "상품을 삭제하지 못했습니다.",
+            );
+          }
         }}
         onAdd={addProductToCart}
         onFavorite={toggleFavorite}
@@ -1246,11 +1612,35 @@ function MifApp() {
         address={editingAddress}
         onClose={() => setSheet(null)}
         onSave={async (address) => {
-          await persist({
-            ...data,
-            addresses: saveAddress(data.addresses, address),
-          });
-          setSheet(null);
+          try {
+            const exists = data.addresses.some((item) => item.id === address.id);
+            const payload = {
+              label: address.label,
+              recipient: address.recipient,
+              phone: address.phone,
+              postalCode: address.postalCode,
+              address: address.address,
+              addressDetail: address.addressDetail,
+              isDefault: address.isDefault,
+            };
+            await runServerFirst(
+              () =>
+                exists
+                  ? mifApi.updateAddress(address.id, payload)
+                  : mifApi.createAddress(payload),
+              () =>
+                persist({
+                  ...data,
+                  addresses: saveAddress(data.addresses, address),
+                }),
+            );
+            setSheet(null);
+          } catch (error) {
+            showFeedback(
+              "배송지 저장",
+              error instanceof Error ? error.message : "배송지를 저장하지 못했습니다.",
+            );
+          }
         }}
       />
       <BankSheet
@@ -1258,14 +1648,34 @@ function MifApp() {
         bank={editingBankRef.current}
         onClose={() => setSheet(null)}
         onSave={async (bank) => {
-          const exists = data.banks.some((item) => item.id === bank.id);
-          await persist({
-            ...data,
-            banks: exists
-              ? data.banks.map((item) => (item.id === bank.id ? bank : item))
-              : [...data.banks, bank],
-          });
-          setSheet(null);
+          try {
+            const exists = data.banks.some((item) => item.id === bank.id);
+            const payload = {
+              bankName: bank.bankName,
+              accountNumber: bank.accountNumber,
+              accountHolder: bank.accountHolder,
+              isActive: bank.isActive,
+            };
+            await runServerFirst(
+              () =>
+                exists
+                  ? mifApi.updateBankAccount(bank.id, payload)
+                  : mifApi.createBankAccount(payload),
+              () =>
+                persist({
+                  ...data,
+                  banks: exists
+                    ? data.banks.map((item) => (item.id === bank.id ? bank : item))
+                    : [...data.banks, bank],
+                }),
+            );
+            setSheet(null);
+          } catch (error) {
+            showFeedback(
+              "결제 계좌 저장",
+              error instanceof Error ? error.message : "결제 계좌를 저장하지 못했습니다.",
+            );
+          }
         }}
       />
       <CategorySheet
@@ -1277,10 +1687,18 @@ function MifApp() {
         onClose={() => setSheet(null)}
         onSave={async (category) => {
           try {
-            await persist(saveCategory(data, category));
+            const exists = data.categories.some((item) => item.id === category.id);
+            const payload = { name: category.name, sortOrder: category.sortOrder };
+            await runServerFirst(
+              () =>
+                exists
+                  ? mifApi.updateCategory(category.id, payload)
+                  : mifApi.createCategory(payload),
+              () => persist(saveCategory(data, category)),
+            );
             setSheet(null);
           } catch (error) {
-            Alert.alert(
+            showFeedback(
               "카테고리 저장",
               error instanceof Error
                 ? error.message
@@ -1294,17 +1712,39 @@ function MifApp() {
         notice={editingNotice}
         onClose={() => setSheet(null)}
         onSave={async (notice) => {
-          const exists = data.notices.some((item) => item.id === notice.id);
-          const next = {
-            ...data,
-            notices: exists
-              ? data.notices.map((item) =>
-                  item.id === notice.id ? notice : item,
-                )
-              : [notice, ...data.notices],
-          };
-          await pushNotice(next, "새 공지", notice.title, "notice", "customer");
-          setSheet(null);
+          try {
+            const exists = data.notices.some((item) => item.id === notice.id);
+            const payload = {
+              title: notice.title,
+              content: notice.content,
+              isVisible: notice.isVisible,
+              startDate: notice.startDate,
+              endDate: notice.endDate,
+            };
+            await runServerFirst(
+              () =>
+                exists
+                  ? mifApi.updateNotice(notice.id, payload)
+                  : mifApi.createNotice(payload),
+              async () => {
+                const next = {
+                  ...data,
+                  notices: exists
+                    ? data.notices.map((item) =>
+                        item.id === notice.id ? notice : item,
+                      )
+                    : [notice, ...data.notices],
+                };
+                await pushNotice(next, "새 공지", notice.title, "notice", "customer");
+              },
+            );
+            setSheet(null);
+          } catch (error) {
+            showFeedback(
+              "공지 저장",
+              error instanceof Error ? error.message : "공지를 저장하지 못했습니다.",
+            );
+          }
         }}
       />
       <NoticeDetailSheet
@@ -1318,39 +1758,85 @@ function MifApp() {
         isAdmin={isAdmin}
         onClose={() => setSheet(null)}
         onSave={async (post) => {
-          const exists = data.qaPosts.some((item) => item.id === post.id);
-          const next = {
-            ...data,
-            qaPosts: exists
-              ? data.qaPosts.map((item) => (item.id === post.id ? post : item))
-              : [post, ...data.qaPosts],
-          };
-          await pushNotice(
-            next,
-            isAdmin ? "Q&A 답변 등록" : "Q&A 문의 등록",
-            post.title,
-            "qa",
-            isAdmin ? "customer" : "admin",
-          );
-          setSheet(null);
+          try {
+            const exists = data.qaPosts.some((item) => item.id === post.id);
+            const latestComment = post.comments[post.comments.length - 1];
+            await runServerFirst(
+              () =>
+                exists
+                  ? mifApi.createQaComment(post.id, {
+                      authorName: latestComment?.authorName ?? session?.name ?? "MIF",
+                      isAdmin,
+                      content: latestComment?.content ?? "",
+                    })
+                  : mifApi.createQaPost({
+                      authorName: post.authorName,
+                      title: post.title,
+                      content: post.content,
+                      isPrivate: post.isPrivate,
+                    }),
+              async () => {
+                const next = {
+                  ...data,
+                  qaPosts: exists
+                    ? data.qaPosts.map((item) => (item.id === post.id ? post : item))
+                    : [post, ...data.qaPosts],
+                };
+                await pushNotice(
+                  next,
+                  isAdmin ? "Q&A 답변 등록" : "Q&A 문의 등록",
+                  post.title,
+                  "qa",
+                  isAdmin ? "customer" : "admin",
+                );
+              },
+            );
+            setSheet(null);
+          } catch (error) {
+            showFeedback(
+              "Q&A 저장",
+              error instanceof Error ? error.message : "Q&A를 저장하지 못했습니다.",
+            );
+          }
         }}
       />
       <InquirySheet
         visible={sheet === "inquiry"}
         onClose={() => setSheet(null)}
         onSave={async (inquiry) => {
-          const next = {
-            ...data,
-            vendorInquiries: [inquiry, ...data.vendorInquiries],
-          };
-          await pushNotice(
-            next,
-            "입점 문의 접수",
-            `${inquiry.companyName} 문의가 접수되었습니다.`,
-            "onboarding",
-            "admin",
-          );
-          setSheet(null);
+          try {
+            await runServerFirst(
+              () =>
+                mifApi.createVendorInquiry({
+                  companyName: inquiry.companyName,
+                  contactName: inquiry.contactName,
+                  phone: inquiry.phone,
+                  email: inquiry.email,
+                  productCategories: inquiry.categories,
+                  serviceArea: inquiry.serviceArea,
+                  message: inquiry.message,
+                }),
+              async () => {
+                const next = {
+                  ...data,
+                  vendorInquiries: [inquiry, ...data.vendorInquiries],
+                };
+                await pushNotice(
+                  next,
+                  "입점 문의 접수",
+                  `${inquiry.companyName} 문의가 접수되었습니다.`,
+                  "onboarding",
+                  "admin",
+                );
+              },
+            );
+            setSheet(null);
+          } catch (error) {
+            showFeedback(
+              "입점 문의",
+              error instanceof Error ? error.message : "문의를 접수하지 못했습니다.",
+            );
+          }
         }}
       />
       <OrderSheet
@@ -1360,17 +1846,63 @@ function MifApp() {
         isAdmin={isAdmin}
         onClose={() => setSheet(null)}
         onStatus={changeOrderStatus}
+        onShipping={async (order, input) => {
+          try {
+            const updated: Order = {
+              ...order,
+              courierCompany: input.courierCompany || undefined,
+              trackingNumber: input.trackingNumber || undefined,
+              truckDriverPhone: input.truckDriverPhone || undefined,
+            };
+            await runServerFirst(
+              () =>
+                mifApi.updateOrderStatus(order.id, {
+                  status: order.status,
+                  courierCompany: updated.courierCompany,
+                  trackingNumber: updated.trackingNumber,
+                  truckDriverPhone: updated.truckDriverPhone,
+                }),
+              () =>
+                persist({
+                  ...data,
+                  orders: data.orders.map((item) =>
+                    item.id === order.id ? updated : item,
+                  ),
+                }),
+            );
+            setSelectedOrder((current) =>
+              current?.id === order.id ? updated : current,
+            );
+            showFeedback("배송 정보 저장", "배송 정보를 저장했습니다.", "success");
+          } catch (error) {
+            showFeedback(
+              "배송 정보",
+              error instanceof Error ? error.message : "배송 정보를 저장하지 못했습니다.",
+            );
+          }
+        }}
         onReorder={(order) => {
           setCart(order.items);
           goToPage("cart");
           setSheet(null);
         }}
         onDelete={async (id) => {
-          await persist({
-            ...data,
-            orders: data.orders.filter((order) => order.id !== id),
-          });
-          setSheet(null);
+          try {
+            await runServerFirst(
+              () => mifApi.deleteOrder(id),
+              () =>
+                persist({
+                  ...data,
+                  orders: data.orders.filter((order) => order.id !== id),
+                }),
+            );
+            setSheet(null);
+          } catch (error) {
+            showFeedback(
+              "주문 삭제",
+              error instanceof Error ? error.message : "주문을 삭제하지 못했습니다.",
+            );
+          }
         }}
       />
       <CartFeedbackModal
@@ -2385,6 +2917,7 @@ function OrdersPage({
   onSelect,
   onOpen,
   onBulk,
+  onExport,
 }: {
   orders: Order[];
   allCounts: Record<OrderStatus, number>;
@@ -2399,6 +2932,7 @@ function OrdersPage({
   onSelect: (id: string) => void;
   onOpen: (order: Order) => void;
   onBulk: () => void;
+  onExport?: () => void;
 }) {
   const [periodPickerVisible, setPeriodPickerVisible] = useState(false);
   const [periodPickerTarget, setPeriodPickerTarget] = useState<"from" | "to">("from");
@@ -2469,6 +3003,12 @@ function OrdersPage({
             <Text style={styles.quickRangeText}>이번 달</Text>
           </Pressable>
         </View>
+        {isAdmin && onExport ? (
+          <Pressable style={styles.exportButton} onPress={onExport}>
+            {icon("download-outline", palette.navy, 16)}
+            <Text style={styles.exportButtonText}>조회 기간 주문 CSV 내보내기</Text>
+          </Pressable>
+        ) : null}
       </View>
       <ScrollView
         horizontal
@@ -2718,6 +3258,7 @@ function ProfilePage({
   onClose,
   onLogin,
   onPassword,
+  onChangePassword,
   onLogout,
 }: {
   session: SessionUser | null;
@@ -2726,6 +3267,7 @@ function ProfilePage({
   onClose: () => void;
   onLogin: () => void;
   onPassword: () => void;
+  onChangePassword: () => void;
   onLogout: () => void;
 }) {
   const isSignedIn = Boolean(session);
@@ -2746,6 +3288,14 @@ function ProfilePage({
         </View>
       </View>
       <MenuGroup title="계정 보안">
+        {isSignedIn && (
+          <MenuRow
+            icon="key-outline"
+            title="비밀번호 변경"
+            copy="현재 비밀번호를 확인한 뒤 새 비밀번호로 변경합니다."
+            onPress={onChangePassword}
+          />
+        )}
         {role === "customer" && (
           <MenuRow
             icon="lock-closed-outline"
@@ -3612,12 +4162,18 @@ function NotificationsPage({
   onClose,
   onRead,
   onReadAll,
+  onOpenTarget,
+  onDelete,
+  onClearRead,
 }: {
   notifications: MifData["notifications"];
   onBack: () => void;
   onClose: () => void;
   onRead: (id: string) => void;
   onReadAll: () => void;
+  onOpenTarget: (item: AppNotification) => void;
+  onDelete: (id: string) => void;
+  onClearRead: () => void;
 }) {
   return (
     <View style={styles.page}>
@@ -3627,6 +4183,14 @@ function NotificationsPage({
         onClose={onClose}
         action={{ icon: "checkmark-done-outline", onPress: onReadAll }}
       />
+      <View style={styles.notificationToolbar}>
+        <Text style={styles.helper}>
+          읽은 알림은 30일 후 자동 정리되며, 지금 바로 정리할 수도 있습니다.
+        </Text>
+        <Pressable style={styles.smallOutlineButton} onPress={onClearRead}>
+          <Text style={styles.smallOutlineButtonText}>읽은 알림 정리</Text>
+        </Pressable>
+      </View>
       <FlatList
         data={notifications}
         keyExtractor={(item) => item.id}
@@ -3641,13 +4205,25 @@ function NotificationsPage({
         renderItem={({ item }) => (
           <Pressable
             style={[styles.card, !item.isRead && styles.unread]}
-            onPress={() => onRead(item.id)}
+            onPress={() => {
+              onRead(item.id);
+              onOpenTarget(item);
+            }}
           >
             <Text style={styles.strong}>{item.title}</Text>
             <Text style={styles.noticeContent}>{item.body}</Text>
-            <Text style={styles.noticeDate}>
-              {item.createdAt.slice(0, 16).replace("T", " ")}
-            </Text>
+            <View style={styles.notificationFooter}>
+              <Text style={styles.noticeDate}>
+                {item.createdAt.slice(0, 16).replace("T", " ")}
+              </Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => onDelete(item.id)}
+                accessibilityLabel="알림 삭제"
+              >
+                <Ionicons name="trash-outline" size={16} color={palette.muted} />
+              </Pressable>
+            </View>
           </Pressable>
         )}
       />
@@ -4113,6 +4689,89 @@ function PasswordSheet({
   );
 }
 
+function PasswordChangeSheet({
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSubmit: (input: { currentPassword: string; newPassword: string }) => Promise<void>;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (visible) {
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setError("");
+    }
+  }, [visible]);
+  return (
+    <Sheet visible={visible} title="비밀번호 변경" onClose={onClose}>
+      <Text style={styles.helper}>
+        현재 비밀번호를 확인한 뒤 새 비밀번호로 변경합니다. 변경하면 다른 기기의 로그인은 해제됩니다.
+      </Text>
+      <Field
+        label="현재 비밀번호"
+        value={currentPassword}
+        onChangeText={(value) => {
+          setCurrentPassword(value);
+          setError("");
+        }}
+        placeholder="현재 비밀번호"
+        secureTextEntry
+      />
+      <Field
+        label="새 비밀번호"
+        value={newPassword}
+        onChangeText={(value) => {
+          setNewPassword(value);
+          setError("");
+        }}
+        placeholder="새 비밀번호 (4자 이상)"
+        secureTextEntry
+      />
+      <Field
+        label="새 비밀번호 확인"
+        value={confirmPassword}
+        onChangeText={(value) => {
+          setConfirmPassword(value);
+          setError("");
+        }}
+        placeholder="새 비밀번호 확인"
+        secureTextEntry
+      />
+      {error ? <Text style={styles.formError}>{error}</Text> : null}
+      <Primary
+        text="비밀번호 변경"
+        onPress={() => {
+          if (!currentPassword || !newPassword) {
+            setError("현재 비밀번호와 새 비밀번호를 입력해 주세요.");
+            return;
+          }
+          if (newPassword.length < 4) {
+            setError("새 비밀번호는 4자 이상이어야 합니다.");
+            return;
+          }
+          if (newPassword !== confirmPassword) {
+            setError("새 비밀번호가 서로 일치하지 않습니다.");
+            return;
+          }
+          if (newPassword === currentPassword) {
+            setError("현재 비밀번호와 다른 비밀번호를 입력해 주세요.");
+            return;
+          }
+          void onSubmit({ currentPassword, newPassword });
+        }}
+      />
+    </Sheet>
+  );
+}
+
 function ProductSheet({
   visible,
   product,
@@ -4160,6 +4819,7 @@ function ProductSheet({
   const [badges, setBadges] = useState<ProductBadge[]>(product?.badges ?? []);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
+  const [adminPreview, setAdminPreview] = useState(false);
   useEffect(() => {
     if (visible) {
       const defaultCategory = categories.find((item) => item.isActive);
@@ -4179,6 +4839,7 @@ function ProductSheet({
       setBadges(product?.badges ?? []);
       setFieldErrors({});
       setDeleteConfirmVisible(false);
+      setAdminPreview(false);
     }
   }, [visible, product, categories]);
   const pickMainImage = async () => {
@@ -4186,7 +4847,18 @@ function ProductSheet({
       mediaTypes: ["images"],
       quality: 0.8,
     });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
+    if (result.canceled) return;
+    const localUri = result.assets[0].uri;
+    setImageUri(localUri);
+    /** 서버 연동 시에는 S3에 업로드해 다른 기기에서도 같은 이미지를 볼 수 있게 한다. */
+    if (isMifApiConfigured() && getMifSessionToken()) {
+      try {
+        const uploaded = await mifApi.uploadProductImage(localUri, "product-main.jpg");
+        setImageUri(uploaded.url || uploaded.key);
+      } catch {
+        setImageUri(localUri);
+      }
+    }
   };
   const pickDetailImages = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -4195,8 +4867,22 @@ function ProductSheet({
       allowsMultipleSelection: true,
       selectionLimit: 5,
     });
-    if (!result.canceled)
-      setDetailImageUris(result.assets.map((asset) => asset.uri).filter(Boolean).slice(0, 5));
+    if (result.canceled) return;
+    const localUris = result.assets.map((asset) => asset.uri).filter(Boolean).slice(0, 5);
+    setDetailImageUris(localUris);
+    if (isMifApiConfigured() && getMifSessionToken()) {
+      const uploads = await Promise.all(
+        localUris.map(async (uri, index) => {
+          try {
+            const uploaded = await mifApi.uploadProductImage(uri, `product-detail-${index + 1}.jpg`);
+            return uploaded.url || uploaded.key;
+          } catch {
+            return uri;
+          }
+        }),
+      );
+      setDetailImageUris(uploads);
+    }
   };
   const save = async () => {
     const category = categories.find((item) => item.id === categoryId);
@@ -4241,7 +4927,37 @@ function ProductSheet({
       }
       onClose={onClose}
     >
-      {isAdmin ? (
+      {isAdmin && product ? (
+        <View style={styles.adminPreviewToggle}>
+          <Pressable
+            style={[styles.previewToggleTab, !adminPreview && styles.previewToggleTabActive]}
+            onPress={() => setAdminPreview(false)}
+          >
+            <Text
+              style={[
+                styles.previewToggleText,
+                !adminPreview && styles.previewToggleTextActive,
+              ]}
+            >
+              상품 수정
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.previewToggleTab, adminPreview && styles.previewToggleTabActive]}
+            onPress={() => setAdminPreview(true)}
+          >
+            <Text
+              style={[
+                styles.previewToggleText,
+                adminPreview && styles.previewToggleTextActive,
+              ]}
+            >
+              거래처 화면 보기
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {isAdmin && !adminPreview ? (
         <>
           <Field
             label="상품명"
@@ -5260,6 +5976,7 @@ function OrderSheet({
   onStatus,
   onReorder,
   onDelete,
+  onShipping,
 }: {
   visible: boolean;
   order?: Order;
@@ -5269,7 +5986,19 @@ function OrderSheet({
   onStatus: (order: Order, status?: OrderStatus) => Promise<void>;
   onReorder: (order: Order) => void;
   onDelete: (id: string) => Promise<void>;
+  onShipping: (
+    order: Order,
+    input: { courierCompany: string; trackingNumber: string; truckDriverPhone: string },
+  ) => Promise<void>;
 }) {
+  const [courier, setCourier] = useState("");
+  const [tracking, setTracking] = useState("");
+  const [driverPhone, setDriverPhone] = useState("");
+  useEffect(() => {
+    setCourier(order?.courierCompany ?? "");
+    setTracking(order?.trackingNumber ?? "");
+    setDriverPhone(order?.truckDriverPhone ?? "");
+  }, [order?.id, order?.courierCompany, order?.trackingNumber, order?.truckDriverPhone]);
   if (!order) return null;
   const bank = banks.find((item) => item.id === order.paymentBankAccountId);
   const next = nextOrderStatus(order.status);
@@ -5323,21 +6052,89 @@ function OrderSheet({
             </View>
           </View>
           {shippingInfo.map((line) => <Text key={line} style={styles.orderDetailShippingInfo}>🚚 {line}</Text>)}
+          {order.deliveryMethod === "courier" && order.trackingNumber && (
+            <Pressable
+              style={styles.trackingLinkButton}
+              onPress={() =>
+                Linking.openURL(
+                  `https://search.naver.com/search.naver?query=${encodeURIComponent(
+                    `${order.courierCompany ?? "택배"} ${order.trackingNumber} 배송조회`,
+                  )}`,
+                ).catch(() => undefined)
+              }
+            >
+              {icon("navigate-outline", palette.teal, 15)}
+              <Text style={styles.trackingLinkText}>배송조회 열기</Text>
+            </Pressable>
+          )}
+          {order.deliveryMethod === "truck" && order.truckDriverPhone && (
+            <Pressable
+              style={styles.trackingLinkButton}
+              onPress={() =>
+                Linking.openURL(`tel:${order.truckDriverPhone}`).catch(() => undefined)
+              }
+            >
+              {icon("call-outline", palette.success, 15)}
+              <Text style={styles.trackingLinkText}>
+                기사 전화 연결 {order.truckDriverPhone}
+              </Text>
+            </Pressable>
+          )}
         </View>
+        {isAdmin && order.status !== "CANCELED" && (
+          <View style={styles.orderDetailSection}>
+            <Text style={styles.orderDetailSectionTitle}>배송 정보 입력</Text>
+            {order.deliveryMethod === "courier" ? (
+              <>
+                <Text style={styles.fieldLabel}>택배사</Text>
+                <TextInput
+                  style={styles.input}
+                  value={courier}
+                  onChangeText={setCourier}
+                  placeholder="예: CJ대한통운"
+                  placeholderTextColor={palette.muted}
+                />
+                <Text style={styles.fieldLabel}>송장 번호</Text>
+                <TextInput
+                  style={styles.input}
+                  value={tracking}
+                  onChangeText={setTracking}
+                  placeholder="송장 번호를 입력하세요"
+                  placeholderTextColor={palette.muted}
+                  keyboardType="number-pad"
+                />
+              </>
+            ) : (
+              <>
+                <Text style={styles.fieldLabel}>배송 기사 연락처</Text>
+                <TextInput
+                  style={styles.input}
+                  value={driverPhone}
+                  onChangeText={setDriverPhone}
+                  placeholder="예: 010-0000-0000"
+                  placeholderTextColor={palette.muted}
+                  keyboardType="phone-pad"
+                />
+              </>
+            )}
+            <Secondary
+              compact
+              text="배송 정보 저장"
+              onPress={() =>
+                onShipping(order, {
+                  courierCompany: courier.trim(),
+                  trackingNumber: tracking.trim(),
+                  truckDriverPhone: driverPhone.trim(),
+                })
+              }
+            />
+          </View>
+        )}
         {order.note && (
           <View style={styles.orderNote}>
             <Text style={styles.orderNoteLabel}>배송 요청사항</Text>
             <Text style={styles.orderNoteText}>{order.note}</Text>
           </View>
-        )}
-        {order.deliveryMethod === "truck" && order.truckDriverPhone && (
-          <Pressable
-            onPress={() => Alert.alert("기사 연락처", order.truckDriverPhone!)}
-          >
-            <Text style={styles.link}>
-              배송 기사 전화 {order.truckDriverPhone}
-            </Text>
-          </Pressable>
         )}
         <View style={styles.orderDetailSection}>
           <Text style={styles.orderDetailSectionTitle}>결제 정보</Text>
@@ -5971,6 +6768,87 @@ const styles: any = StyleSheet.create({
     paddingVertical: 13,
     marginTop: 10,
     marginBottom: 8,
+  },
+  notificationToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  trackingLinkButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 8,
+  },
+  adminPreviewToggle: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 14,
+  },
+  exportButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 10,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.surface,
+  },
+  exportButtonText: {
+    color: palette.navy,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  previewToggleTab: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 9,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.surface,
+  },
+  previewToggleTabActive: {
+    backgroundColor: palette.teal,
+    borderColor: palette.teal,
+  },
+  previewToggleText: {
+    color: palette.navy,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  previewToggleTextActive: {
+    color: "#FFFFFF",
+  },
+  trackingLinkText: {
+    color: palette.teal,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  notificationFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  smallOutlineButton: {
+    borderWidth: 1,
+    borderColor: palette.line,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: palette.surface,
+  },
+  smallOutlineButtonText: {
+    color: palette.navy,
+    fontSize: 12,
+    fontWeight: "700",
   },
   deleteProductText: {
     color: palette.error,
