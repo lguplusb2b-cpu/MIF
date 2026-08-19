@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addToCart, advanceOrder, canChooseDesiredDeliveryAt, cartAmount, createMifOrder, filterOrders, resolveDesiredDeliveryAt, setCartQuantity, validateCartCheckout } from "./workflows";
+import { addToCart, advanceOrder, canChooseDesiredDeliveryAt, cartAmount, createMifOrder, filterOrders, quickOrderRange, resolveDesiredDeliveryAt, setCartQuantity, validateCartCheckout } from "./workflows";
 import type { Address, Product } from "./domain";
 
 const product: Product = { id: "p1", name: "MIF 상품", categoryName: "식품", spec: "1kg", unit: "개", basePrice: 1000, minOrderQty: 2, stockStatus: "in_stock", description: "", detailImageUris: [], badges: [], createdAt: "2026-08-19T00:00:00.000Z" };
@@ -34,6 +34,13 @@ describe("MIF 발주 워크플로", () => {
     const afternoon = { ...morning, id: "ord_afternoon", createdAt: "2026-08-19T15:00:00.000Z" };
     expect(filterOrders([morning, afternoon], { from: "2026-08-19T12:00:00.000Z" })).toEqual([afternoon]);
     expect(filterOrders([morning, afternoon], { to: "2026-08-19" })).toEqual([morning, afternoon]);
+  });
+
+  it("오늘·최근 7일·이번 달 빠른 기간은 시작과 종료 시간을 함께 만든다", () => {
+    const now = new Date(2026, 7, 19, 14, 30, 0);
+    expect(quickOrderRange("today", now)).toEqual({ from: "2026-08-19T00:00:00", to: "2026-08-19T23:59:59" });
+    expect(quickOrderRange("last7Days", now)).toEqual({ from: "2026-08-13T00:00:00", to: "2026-08-19T23:59:59" });
+    expect(quickOrderRange("thisMonth", now)).toEqual({ from: "2026-08-01T00:00:00", to: "2026-08-31T23:59:59" });
   });
 
   it("택배는 희망일을 저장하지 않고 용달·픽업은 날짜와 시간을 저장한다", () => {

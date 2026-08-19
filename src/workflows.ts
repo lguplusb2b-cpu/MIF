@@ -1,5 +1,37 @@
 import { makeId, nextOrderStatus, type Address, type CartItem, type DeliveryMethod, type Order, type OrderStatus, type Product } from "./domain";
 
+export type QuickOrderRange = "today" | "last7Days" | "thisMonth";
+
+function localDateValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function quickOrderRange(range: QuickOrderRange, currentDate = new Date()) {
+  const today = new Date(currentDate);
+  today.setHours(0, 0, 0, 0);
+  if (range === "today") {
+    const value = localDateValue(today);
+    return { from: `${value}T00:00:00`, to: `${value}T23:59:59` };
+  }
+  if (range === "last7Days") {
+    const from = new Date(today);
+    from.setDate(today.getDate() - 6);
+    return {
+      from: `${localDateValue(from)}T00:00:00`,
+      to: `${localDateValue(today)}T23:59:59`,
+    };
+  }
+  const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+  const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  return {
+    from: `${localDateValue(firstDay)}T00:00:00`,
+    to: `${localDateValue(lastDay)}T23:59:59`,
+  };
+}
+
 export function addToCart(items: CartItem[], product: Product): CartItem[] {
   const existing = items.find((item) => item.id === product.id);
   if (existing) return items.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + product.minOrderQty } : item);

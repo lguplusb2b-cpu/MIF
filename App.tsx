@@ -77,6 +77,7 @@ import {
   cartAmount,
   createMifOrder,
   filterOrders,
+  quickOrderRange,
   resolveDesiredDeliveryAt,
   setCartQuantity,
   validateCartCheckout,
@@ -135,10 +136,23 @@ function dateAtOffset(offset: number) {
   const date = new Date();
   date.setHours(0, 0, 0, 0);
   date.setDate(date.getDate() + offset);
+  return localDateValue(date);
+}
+
+function localDateValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function monthStartFor(value?: string) {
+  const parsed = value ? new Date(`${value}T00:00:00`) : new Date();
+  return new Date(parsed.getFullYear(), parsed.getMonth(), 1);
+}
+
+function calendarMonthLabel(monthStart: Date) {
+  return `${monthStart.getFullYear()}년 ${monthStart.getMonth() + 1}월`;
 }
 
 function dateChoiceLabel(value: string) {
@@ -2016,8 +2030,7 @@ function CartPage({
               time={desiredTime}
               onDateChange={setDesiredDate}
               onTimeChange={setDesiredTime}
-              startOffset={0}
-              dayCount={21}
+              minimumDate={dateAtOffset(0)}
             />
             <Pressable
               style={styles.primaryButton}
@@ -2129,13 +2142,20 @@ function OrdersPage({
   const [periodPickerTarget, setPeriodPickerTarget] = useState<"from" | "to">("from");
   const [periodDate, setPeriodDate] = useState("");
   const [periodTime, setPeriodTime] = useState("00:00");
+  const [periodMonth, setPeriodMonth] = useState(() => monthStartFor());
   const openPeriodPicker = (target: "from" | "to") => {
     const selected = target === "from" ? from : to;
     const [selectedDate, selectedTime] = selected.split("T");
     setPeriodPickerTarget(target);
     setPeriodDate(selectedDate || dateAtOffset(target === "from" ? -30 : 0));
     setPeriodTime(selectedTime?.slice(0, 5) || (target === "from" ? "00:00" : "23:59"));
+    setPeriodMonth(monthStartFor(selectedDate));
     setPeriodPickerVisible(true);
+  };
+  const applyQuickRange = (range: "today" | "last7Days" | "thisMonth") => {
+    const value = quickOrderRange(range);
+    onFrom(value.from);
+    onTo(value.to);
   };
   const savePeriodPicker = () => {
     const value = `${periodDate}T${periodTime}:00`;
@@ -2173,6 +2193,18 @@ function OrdersPage({
             <Text style={[styles.periodDateText, !to && styles.periodDatePlaceholder]}>
               {dateTimeInputLabel(to, "종료일·시간")}
             </Text>
+          </Pressable>
+        </View>
+        <View style={styles.quickRangeRow}>
+          <Text style={styles.quickRangeLabel}>빠른 선택</Text>
+          <Pressable style={styles.quickRangeButton} onPress={() => applyQuickRange("today")}>
+            <Text style={styles.quickRangeText}>오늘</Text>
+          </Pressable>
+          <Pressable style={styles.quickRangeButton} onPress={() => applyQuickRange("last7Days")}>
+            <Text style={styles.quickRangeText}>최근 7일</Text>
+          </Pressable>
+          <Pressable style={styles.quickRangeButton} onPress={() => applyQuickRange("thisMonth")}>
+            <Text style={styles.quickRangeText}>이번 달</Text>
           </Pressable>
         </View>
       </View>
@@ -2254,8 +2286,8 @@ function OrdersPage({
               time={periodTime}
               onDateChange={setPeriodDate}
               onTimeChange={setPeriodTime}
-              startOffset={-30}
-              dayCount={61}
+              month={periodMonth}
+              onMonthChange={setPeriodMonth}
             />
             <View style={styles.modalActionRow}>
               <Pressable
@@ -4828,49 +4860,93 @@ function DateTimeOptionPicker({
   time,
   onDateChange,
   onTimeChange,
-  startOffset,
-  dayCount,
+  month,
+  onMonthChange,
+  minimumDate,
 }: {
   date: string;
   time: string;
   onDateChange: (value: string) => void;
   onTimeChange: (value: string) => void;
-  startOffset: number;
-  dayCount: number;
+  month?: Date;
+  onMonthChange?: (value: Date) => void;
+  minimumDate?: string;
 }) {
-  const dateOptions = useMemo(
-    () => Array.from({ length: dayCount }, (_, index) => dateAtOffset(startOffset + index)),
-    [dayCount, startOffset],
-  );
+  const [internalMonth, setInternalMonth] = useState(() => monthStartFor(date || minimumDate));
+  const visibleMonth = month ?? internalMonth;
+  const updateMonth = (value: Date) => {
+    const next = new Date(value.getFullYear(), value.getMonth(), 1);
+    if (onMonthChange) onMonthChange(next);
+    else setInternalMonth(next);
+  };
+  useEffect(() => {
+    if (!month && date) setInternalMonth(monthStartFor(date));
+  }, [date, month]);
+  const calendarDays = useMemo(() => {
+    const year = visibleMonth.getFullYear();
+    const monthIndex = visibleMonth.getMonth();
+    const leadingEmpty = new Date(year, monthIndex, 1).getDay();
+    const lastDate = new Date(year, monthIndex + 1, 0).getDate();
+    return [
+      ...Array.from({ length: leadingEmpty }, () => ""),
+      ...Array.from({ length: lastDate }, (_, index) => localDateValue(new Date(year, monthIndex, index + 1))),
+    ];
+  }, [visibleMonth]);
+  const minimumMonth = minimumDate ? monthStartFor(minimumDate) : undefined;
+  const canGoPrevious = !minimumMonth || visibleMonth.getTime() > minimumMonth.getTime();
   return (
     <View style={styles.dateTimePicker}>
       <Text style={styles.fieldLabel}>날짜</Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.dateOptionRow}
-      >
-        {dateOptions.map((option) => (
-          <Pressable
-            key={option}
-            accessibilityLabel={`${dateChoiceLabel(option)} 선택`}
-            style={[
-              styles.dateOption,
-              date === option && styles.dateOptionActive,
-            ]}
-            onPress={() => onDateChange(option)}
-          >
-            <Text
-              style={[
-                styles.dateOptionText,
-                date === option && styles.dateOptionTextActive,
-              ]}
-            >
-              {dateChoiceLabel(option)}
-            </Text>
-          </Pressable>
+      <View style={styles.calendarNav}>
+        <Pressable
+          accessibilityLabel="이전 달"
+          disabled={!canGoPrevious}
+          style={[styles.monthArrow, !canGoPrevious && styles.monthArrowDisabled]}
+          onPress={() => updateMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1))}
+        >
+          {icon("chevron-back", canGoPrevious ? palette.teal : palette.line, 20)}
+        </Pressable>
+        <Text style={styles.calendarMonthLabel}>{calendarMonthLabel(visibleMonth)}</Text>
+        <Pressable
+          accessibilityLabel="다음 달"
+          style={styles.monthArrow}
+          onPress={() => updateMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1))}
+        >
+          {icon("chevron-forward", palette.teal, 20)}
+        </Pressable>
+      </View>
+      <View style={styles.calendarWeekRow}>
+        {["일", "월", "화", "수", "목", "금", "토"].map((weekday) => (
+          <Text key={weekday} style={styles.calendarWeekday}>{weekday}</Text>
         ))}
-      </ScrollView>
+      </View>
+      <View style={styles.calendarGrid}>
+        {calendarDays.map((option, index) => {
+          if (!option) return <View key={`empty-${index}`} style={styles.calendarDayBlank} />;
+          const disabled = Boolean(minimumDate && option < minimumDate);
+          return (
+            <Pressable
+              key={option}
+              accessibilityLabel={`${dateChoiceLabel(option)} 선택`}
+              disabled={disabled}
+              style={[
+                styles.calendarDay,
+                date === option && styles.calendarDayActive,
+                disabled && styles.calendarDayDisabled,
+              ]}
+              onPress={() => onDateChange(option)}
+            >
+              <Text style={[
+                styles.calendarDayText,
+                date === option && styles.calendarDayTextActive,
+                disabled && styles.calendarDayTextDisabled,
+              ]}>
+                {option.slice(-2).replace(/^0/, "")}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
       <Text style={styles.fieldLabel}>시간</Text>
       <View style={styles.timeOptionGrid}>
         {timePickerOptions.map((option) => (
@@ -5583,20 +5659,43 @@ const styles: any = StyleSheet.create({
   },
   periodDateText: { flex: 1, color: palette.ink, fontSize: 11, fontWeight: "700" },
   periodDatePlaceholder: { color: "#98A2B3", fontWeight: "600" },
+  quickRangeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginTop: 10 },
+  quickRangeLabel: { color: palette.muted, fontSize: 11, fontWeight: "800", marginRight: 1 },
+  quickRangeButton: {
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "#B9E4E9",
+    backgroundColor: "#F0FCFD",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickRangeText: { color: palette.teal, fontSize: 11, fontWeight: "900" },
   dateTimePicker: { gap: 8, marginBottom: 16 },
-  dateOptionRow: { gap: 7, paddingRight: 8 },
-  dateOption: {
-    minHeight: 38,
-    paddingHorizontal: 11,
-    borderRadius: 10,
+  calendarNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  monthArrow: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     borderWidth: 1,
     borderColor: palette.line,
     backgroundColor: "#FAFCFD",
+    alignItems: "center",
     justifyContent: "center",
   },
-  dateOptionActive: { backgroundColor: palette.teal, borderColor: palette.teal },
-  dateOptionText: { color: palette.ink, fontSize: 11, fontWeight: "800" },
-  dateOptionTextActive: { color: "#fff" },
+  monthArrowDisabled: { backgroundColor: palette.bg, borderColor: "#EEF2F5" },
+  calendarMonthLabel: { color: palette.ink, fontSize: 14, fontWeight: "900" },
+  calendarWeekRow: { flexDirection: "row", marginTop: 2 },
+  calendarWeekday: { width: "14.285%", color: palette.muted, fontSize: 10, fontWeight: "800", textAlign: "center" },
+  calendarGrid: { flexDirection: "row", flexWrap: "wrap", rowGap: 5 },
+  calendarDay: { width: "14.285%", height: 34, alignItems: "center", justifyContent: "center", borderRadius: 9 },
+  calendarDayBlank: { width: "14.285%", height: 34 },
+  calendarDayActive: { backgroundColor: palette.teal },
+  calendarDayDisabled: { opacity: 0.35 },
+  calendarDayText: { color: palette.ink, fontSize: 12, fontWeight: "800" },
+  calendarDayTextActive: { color: "#fff" },
+  calendarDayTextDisabled: { color: palette.muted },
   timeOptionGrid: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
   timeOption: {
     minWidth: 58,
