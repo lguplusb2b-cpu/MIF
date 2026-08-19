@@ -85,7 +85,16 @@ import {
   visibleNotifications,
 } from "./src/notification-workflows";
 import { presentPreviewPush, requestMifPushPermission } from "./src/push";
-import { getProductSaveError, saveProduct } from "./src/product-workflows";
+import {
+  ALL_PRODUCT_CATEGORY_ID,
+  filterProductsForListing,
+  getCategoryAfterSearchInput,
+  getProductSaveError,
+  PRODUCT_SORT_OPTIONS,
+  saveProduct,
+  sortProductsForListing,
+  type ProductSortOption,
+} from "./src/product-workflows";
 import {
   deliveryMethodPresentation,
   formatDesiredDelivery,
@@ -269,10 +278,10 @@ function MifApp() {
   const [session, setSession] = useState<SessionUser | null>(null);
   const [previewRole, setPreviewRole] = useState<UserRole>("customer");
   const [productQuery, setProductQuery] = useState("");
-  const [productCategory, setProductCategory] = useState("ALL");
-  const [productSort, setProductSort] = useState<
-    "recent" | "priceAsc" | "priceDesc"
-  >("recent");
+  const [productCategory, setProductCategory] = useState<string>(
+    ALL_PRODUCT_CATEGORY_ID,
+  );
+  const [productSort, setProductSort] = useState<ProductSortOption>("popular");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [orderStatus, setOrderStatus] = useState<OrderStatus | "ALL">("ALL");
   const [orderFrom, setOrderFrom] = useState("");
@@ -683,24 +692,13 @@ function MifApp() {
   };
 
   const productList = useMemo(() => {
-    const source = data.products.filter(
-      (product) =>
-        (productCategory === "ALL" ||
-          product.categoryId === productCategory ||
-          product.categoryName === productCategory) &&
-        (!favoritesOnly || data.favorites.includes(product.id)) &&
-        `${product.name} ${product.categoryName} ${product.spec}`
-          .toLowerCase()
-          .includes(productQuery.toLowerCase()),
+    const source = filterProductsForListing(data.products, {
+      categoryId: productCategory,
+      query: productQuery,
+    }).filter((product) =>
+      !favoritesOnly || data.favorites.includes(product.id),
     );
-    return [...source].sort((a, b) =>
-      productSort === "priceAsc"
-        ? a.basePrice - b.basePrice
-        : productSort === "priceDesc"
-          ? b.basePrice - a.basePrice
-          : (b.featuredPriority ?? 0) - (a.featuredPriority ?? 0) ||
-            b.createdAt.localeCompare(a.createdAt),
-    );
+    return sortProductsForListing(source, productSort);
   }, [
     data.products,
     data.favorites,
@@ -775,13 +773,19 @@ function MifApp() {
           <ProductsPage
             categories={productCategories}
             products={productList}
+            totalProductCount={data.products.length}
             favorites={data.favorites}
             query={productQuery}
             category={productCategory}
             sort={productSort}
             favoritesOnly={favoritesOnly}
             isAdmin={isAdmin}
-            onQuery={setProductQuery}
+            onQuery={(value) => {
+              setProductQuery(value);
+              setProductCategory(
+                getCategoryAfterSearchInput(productCategory, value),
+              );
+            }}
             onCategory={setProductCategory}
             onSort={setProductSort}
             onFavoritesOnly={setFavoritesOnly}
@@ -910,8 +914,9 @@ function MifApp() {
             )}
             favorites={data.favorites}
             query=""
-            category="ALL"
-            sort="recent"
+            totalProductCount={data.products.filter((product) => data.favorites.includes(product.id)).length}
+            category={ALL_PRODUCT_CATEGORY_ID}
+            sort="popular"
             favoritesOnly
             isAdmin={false}
             onQuery={() => undefined}
@@ -1613,6 +1618,7 @@ function HomePage({
 function ProductsPage({
   categories,
   products,
+  totalProductCount,
   favorites,
   query,
   category,
@@ -1634,15 +1640,16 @@ function ProductsPage({
 }: {
   categories: Category[];
   products: Product[];
+  totalProductCount: number;
   favorites: string[];
   query: string;
   category: string;
-  sort: "recent" | "priceAsc" | "priceDesc";
+  sort: ProductSortOption;
   favoritesOnly: boolean;
   isAdmin: boolean;
   onQuery: (value: string) => void;
   onCategory: (value: string) => void;
-  onSort: (value: "recent" | "priceAsc" | "priceDesc") => void;
+  onSort: (value: ProductSortOption) => void;
   onFavoritesOnly: (value: boolean) => void;
   onToggleFavorite: (id: string) => void;
   onAdd: (product: Product) => void;
@@ -1653,6 +1660,10 @@ function ProductsPage({
   onBack?: () => void;
   onClose?: () => void;
 }) {
+  const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const selectedSort =
+    PRODUCT_SORT_OPTIONS.find((option) => option.id === sort) ??
+    PRODUCT_SORT_OPTIONS[0];
   const headerAction =
     isAdmin && onAddProduct
       ? { icon: "add", onPress: onAddProduct }
@@ -1684,10 +1695,20 @@ function ProductsPage({
             <TextInput
               value={query}
               onChangeText={onQuery}
-              placeholder="상품명, 규격, 카테고리 검색"
+              placeholder="상품명 검색"
               placeholderTextColor="#98A2B3"
               style={styles.searchInput}
+              returnKeyType="search"
             />
+            {query.length > 0 && (
+              <Pressable
+                accessibilityLabel="상품 검색어 지우기"
+                onPress={() => onQuery("")}
+                style={styles.searchClearButton}
+              >
+                {icon("close-circle", palette.muted, 18)}
+              </Pressable>
+            )}
           </View>
           <ScrollView
             horizontal
@@ -1695,9 +1716,9 @@ function ProductsPage({
             contentContainerStyle={styles.chipRow}
           >
             <Chip
-              label="전체"
-              active={category === "ALL"}
-              onPress={() => onCategory("ALL")}
+              label="전체상품"
+              active={category === ALL_PRODUCT_CATEGORY_ID}
+              onPress={() => onCategory(ALL_PRODUCT_CATEGORY_ID)}
             />
             {categories.map((item) => (
               <Chip
@@ -1709,25 +1730,17 @@ function ProductsPage({
             ))}
           </ScrollView>
           <View style={styles.filterRow}>
-            <Chip
-              label={
-                sort === "recent"
-                  ? "최신순"
-                  : sort === "priceAsc"
-                    ? "낮은 가격순"
-                    : "높은 가격순"
-              }
-              active
-              onPress={() =>
-                onSort(
-                  sort === "recent"
-                    ? "priceAsc"
-                    : sort === "priceAsc"
-                      ? "priceDesc"
-                      : "recent",
-                )
-              }
-            />
+            <Text style={styles.productCount}>
+              상품 {products.length}/{totalProductCount}개
+            </Text>
+            <Pressable
+              accessibilityLabel={`상품 정렬 ${selectedSort.label}`}
+              onPress={() => setSortMenuVisible(true)}
+              style={styles.sortSelector}
+            >
+              <Text style={styles.sortSelectorText}>{selectedSort.label}</Text>
+              {icon("chevron-down", palette.muted, 15)}
+            </Pressable>
             <Chip
               label="찜한 상품"
               active={favoritesOnly}
@@ -1763,6 +1776,55 @@ function ProductsPage({
           />
         )}
       />
+      <Modal
+        visible={sortMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSortMenuVisible(false)}
+      >
+        <Pressable
+          style={styles.sortModalBackdrop}
+          onPress={() => setSortMenuVisible(false)}
+        >
+          <View
+            style={styles.sortModalCard}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.sortModalHeader}>
+              <Text style={styles.sortModalTitle}>상품 정렬</Text>
+              <Pressable
+                accessibilityLabel="상품 정렬 닫기"
+                onPress={() => setSortMenuVisible(false)}
+                style={styles.iconButton}
+              >
+                {icon("close-outline", palette.muted, 22)}
+              </Pressable>
+            </View>
+            {PRODUCT_SORT_OPTIONS.map((option) => {
+              const active = sort === option.id;
+              return (
+                <Pressable
+                  key={option.id}
+                  accessibilityLabel={`${option.label} 정렬 선택`}
+                  style={[styles.sortOption, active && styles.sortOptionActive]}
+                  onPress={() => {
+                    onSort(option.id);
+                    setSortMenuVisible(false);
+                  }}
+                >
+                  <View style={styles.sortOptionCopy}>
+                    <Text style={[styles.sortOptionLabel, active && styles.sortOptionLabelActive]}>
+                      {option.label}
+                    </Text>
+                    <Text style={styles.sortOptionDescription}>{option.description}</Text>
+                  </View>
+                  {active && icon("checkmark-circle", palette.teal, 20)}
+                </Pressable>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -6071,6 +6133,12 @@ const styles: any = StyleSheet.create({
     borderRadius: 13,
   },
   searchInput: { flex: 1, color: palette.ink, fontSize: 13 },
+  searchClearButton: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   chipRow: {
     paddingHorizontal: 18,
     paddingVertical: 8,
@@ -6081,9 +6149,59 @@ const styles: any = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 5,
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: 7,
+    alignItems: "center",
   },
+  productCount: { flex: 1, color: palette.muted, fontSize: 12, fontWeight: "700" },
+  sortSelector: {
+    minHeight: 32,
+    paddingLeft: 11,
+    paddingRight: 8,
+    borderRadius: 18,
+    borderColor: palette.line,
+    borderWidth: 1,
+    backgroundColor: palette.surface,
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 3,
+  },
+  sortSelectorText: { color: palette.ink, fontSize: 11, fontWeight: "800" },
+  sortModalBackdrop: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "#102A4380",
+    padding: 18,
+  },
+  sortModalCard: {
+    borderRadius: 20,
+    backgroundColor: palette.surface,
+    padding: 16,
+    gap: 8,
+  },
+  sortModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 3,
+  },
+  sortModalTitle: { color: palette.navy, fontSize: 17, fontWeight: "900" },
+  sortOption: {
+    minHeight: 62,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 13,
+    borderColor: palette.line,
+    borderWidth: 1,
+    backgroundColor: palette.bg,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  sortOptionActive: { borderColor: palette.teal, backgroundColor: palette.aqua },
+  sortOptionCopy: { flex: 1, gap: 3 },
+  sortOptionLabel: { color: palette.ink, fontSize: 14, fontWeight: "900" },
+  sortOptionLabelActive: { color: palette.teal },
+  sortOptionDescription: { color: palette.muted, fontSize: 11 },
   chip: {
     minHeight: 32,
     paddingHorizontal: 11,

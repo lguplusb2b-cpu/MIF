@@ -1,5 +1,60 @@
 import type { Category, MifData, Product } from "./domain";
 
+export const ALL_PRODUCT_CATEGORY_ID = "ALL" as const;
+
+export type ProductSortOption = "popular" | "priceHigh" | "priceLow" | "newest";
+
+export const PRODUCT_SORT_OPTIONS: ReadonlyArray<{
+  id: ProductSortOption;
+  label: string;
+  description: string;
+}> = [
+  { id: "popular", label: "인기순", description: "우선 노출 상품과 최신 상품 순" },
+  { id: "priceHigh", label: "가격 높은순", description: "판매가가 높은 상품 순" },
+  { id: "priceLow", label: "가격 낮은순", description: "판매가가 낮은 상품 순" },
+  { id: "newest", label: "최신순", description: "최근 등록·수정 상품 순" },
+];
+
+export function getCategoryAfterSearchInput(
+  currentCategoryId: string,
+  query: string,
+): string {
+  return query.trim() ? ALL_PRODUCT_CATEGORY_ID : currentCategoryId;
+}
+
+export function filterProductsForListing(
+  products: Product[],
+  input: { categoryId: string; query: string },
+): Product[] {
+  const normalizedQuery = input.query.trim().toLocaleLowerCase("ko");
+  return products.filter((product) => {
+    const matchesCategory =
+      input.categoryId === ALL_PRODUCT_CATEGORY_ID ||
+      product.categoryId === input.categoryId ||
+      product.categoryName === input.categoryId;
+    const searchableText = `${product.name} ${product.categoryName} ${product.spec}`.toLocaleLowerCase("ko");
+    return matchesCategory && (!normalizedQuery || searchableText.includes(normalizedQuery));
+  });
+}
+
+function newestFirst(left: Product, right: Product) {
+  const leftDate = left.updatedAt ?? left.createdAt;
+  const rightDate = right.updatedAt ?? right.createdAt;
+  return rightDate.localeCompare(leftDate);
+}
+
+export function sortProductsForListing(
+  products: Product[],
+  sortOption: ProductSortOption,
+): Product[] {
+  return [...products].sort((left, right) => {
+    if (sortOption === "priceHigh") return right.basePrice - left.basePrice || newestFirst(left, right);
+    if (sortOption === "priceLow") return left.basePrice - right.basePrice || newestFirst(left, right);
+    if (sortOption === "newest") return newestFirst(left, right);
+    return (right.featuredPriority ?? 0) - (left.featuredPriority ?? 0) || newestFirst(left, right);
+  });
+}
+
 export function getProductSaveError(product: Product, categories: Category[]): string | null {
   if (!product.name.trim()) return "상품명을 입력해 주세요.";
   if (!product.categoryId && !product.categoryName.trim()) return "카테고리를 선택하거나 입력해 주세요.";
