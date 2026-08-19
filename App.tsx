@@ -2,6 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { useEffect, useMemo, useState } from "react";
+import DraggableFlatList from "react-native-draggable-flatlist";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import {
   ActivityIndicator,
   Alert,
@@ -28,7 +30,9 @@ import {
 } from "./src/auth-workflows";
 import { changePreviewAccountRole, roleLabel } from "./src/role-workflows";
 import {
+  moveCategory,
   orderedProductCategories,
+  reorderCategories,
   removeCategory,
   saveCategory,
 } from "./src/category-workflows";
@@ -211,9 +215,11 @@ const icon = (name: string, color = palette.teal, size = 20) => (
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <MifApp />
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <MifApp />
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -996,6 +1002,12 @@ function MifApp() {
               if (productCategory === id) setProductCategory("ALL");
               await persist(removeCategory(data, id));
             }}
+            onReorder={async (ids) =>
+              await persist(reorderCategories(data, ids))
+            }
+            onMove={async (id, direction) =>
+              await persist(moveCategory(data, id, direction))
+            }
           />
         )}
       </View>
@@ -3298,6 +3310,8 @@ function CategoriesPage({
   onEdit,
   onAdd,
   onDelete,
+  onReorder,
+  onMove,
 }: {
   categories: Category[];
   onBack: () => void;
@@ -3305,6 +3319,8 @@ function CategoriesPage({
   onEdit: (category: Category) => void;
   onAdd: () => void;
   onDelete: (id: string) => void;
+  onReorder: (ids: string[]) => void;
+  onMove: (id: string, direction: "up" | "down") => void;
 }) {
   return (
     <View style={styles.page}>
@@ -3314,10 +3330,21 @@ function CategoriesPage({
         onClose={onClose}
         action={{ icon: "add", onPress: onAdd }}
       />
-      <FlatList
+      <DraggableFlatList
         data={categories}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
+        activationDistance={10}
+        onDragEnd={({ data: nextCategories }) =>
+          onReorder(nextCategories.map((category) => category.id))
+        }
+        ListHeaderComponent={
+          categories.length ? (
+            <Text style={styles.categoryOrderHint}>
+              ⋮⋮ 핸들을 길게 눌러 드래그하거나 화살표로 노출 순서를 변경하세요.
+            </Text>
+          ) : null
+        }
         ListEmptyComponent={
           <InlineEmpty
             icon="grid-outline"
@@ -3325,17 +3352,63 @@ function CategoriesPage({
             copy="오른쪽 상단 + 버튼으로 카테고리를 등록하세요."
           />
         }
-        renderItem={({ item }) => (
-          <View style={styles.card}>
+        renderItem={({ item, drag, isActive, getIndex }) => {
+          const index = getIndex() ?? 0;
+          return (
+          <View style={[styles.card, isActive && styles.categoryDraggingCard]}>
             <View style={styles.sectionRow}>
-              <Text style={styles.strong}>
-                {item.icon} {item.name}
-              </Text>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                <Pressable onPress={() => onEdit(item)}>
+              <View style={styles.categoryTitleRow}>
+                <Pressable
+                  accessibilityLabel={`${item.name} 드래그하여 순서 변경`}
+                  onLongPress={drag}
+                  delayLongPress={120}
+                  style={styles.categoryDragHandle}
+                >
+                  {icon("reorder-three-outline", palette.muted, 22)}
+                </Pressable>
+                <Text style={styles.strong}>
+                  {item.icon} {item.name}
+                </Text>
+              </View>
+              <View style={styles.categoryOrderActions}>
+                <Pressable
+                  accessibilityLabel={`${item.name} 위로 이동`}
+                  disabled={index === 0}
+                  onPress={() => onMove(item.id, "up")}
+                  style={[
+                    styles.categoryMoveButton,
+                    index === 0 && styles.categoryMoveButtonDisabled,
+                  ]}
+                >
+                  {icon("chevron-up-outline", index === 0 ? palette.line : palette.teal, 18)}
+                </Pressable>
+                <Pressable
+                  accessibilityLabel={`${item.name} 아래로 이동`}
+                  disabled={index === categories.length - 1}
+                  onPress={() => onMove(item.id, "down")}
+                  style={[
+                    styles.categoryMoveButton,
+                    index === categories.length - 1 && styles.categoryMoveButtonDisabled,
+                  ]}
+                >
+                  {icon(
+                    "chevron-down-outline",
+                    index === categories.length - 1 ? palette.line : palette.teal,
+                    18,
+                  )}
+                </Pressable>
+                <Pressable
+                  accessibilityLabel={`${item.name} 수정`}
+                  onPress={() => onEdit(item)}
+                  style={styles.categoryMoveButton}
+                >
                   {icon("create-outline")}
                 </Pressable>
-                <Pressable onPress={() => onDelete(item.id)}>
+                <Pressable
+                  accessibilityLabel={`${item.name} 삭제`}
+                  onPress={() => onDelete(item.id)}
+                  style={styles.categoryMoveButton}
+                >
                   {icon("trash-outline", palette.error)}
                 </Pressable>
               </View>
@@ -3344,7 +3417,8 @@ function CategoriesPage({
               노출 순서 {item.sortOrder} · {item.isActive ? "사용" : "숨김"}
             </Text>
           </View>
-        )}
+          );
+        }}
       />
     </View>
   );
@@ -5454,6 +5528,33 @@ const styles: any = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
   },
+  categoryOrderHint: {
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 2,
+  },
+  categoryDraggingCard: {
+    borderColor: palette.teal,
+    backgroundColor: palette.aqua,
+    opacity: 0.95,
+  },
+  categoryTitleRow: { flexDirection: "row", alignItems: "center", flex: 1, gap: 4 },
+  categoryDragHandle: {
+    width: 30,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: -6,
+  },
+  categoryOrderActions: { flexDirection: "row", alignItems: "center", gap: 2 },
+  categoryMoveButton: {
+    width: 30,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  categoryMoveButtonDisabled: { opacity: 0.55 },
   sectionTitle: {
     color: palette.ink,
     fontSize: 17,
