@@ -19,6 +19,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
+      "edgeToEdgeEnabled": false,
       "package": "com.lguplusb2b.mif",
       "versionCode": 1,
       "permissions": [

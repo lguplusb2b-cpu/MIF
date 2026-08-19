@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -11,15 +10,16 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Share,
+  StatusBar,
   StyleSheet,
   Switch,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { isMifApiConfigured, mifApi, type MifSessionUser } from "./src/api";
 import {
   accountFromApprovedApplication,
@@ -205,6 +205,15 @@ const icon = (name: string, color = palette.teal, size = 20) => (
 );
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <MifApp />
+    </SafeAreaProvider>
+  );
+}
+
+function MifApp() {
+  const insets = useSafeAreaInsets();
   const [data, setData] = useState<MifData>(emptyMifData);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartFeedback, setCartFeedback] = useState<{
@@ -629,7 +638,7 @@ export default function App() {
 
   if (!ready)
     return (
-      <SafeAreaView style={styles.loading}>
+      <SafeAreaView edges={["top", "bottom", "left", "right"]} style={styles.loading}>
         <ActivityIndicator size="large" color={palette.teal} />
         <Text style={styles.muted}>MIF 앱을 준비하는 중입니다.</Text>
       </SafeAreaView>
@@ -643,8 +652,8 @@ export default function App() {
     page,
   );
   const content = (
-    <SafeAreaView style={styles.app}>
-      <StatusBar style="dark" />
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.app}>
+      <StatusBar barStyle="dark-content" backgroundColor={palette.surface} translucent={false} />
       <AppBar
         role={role}
         unread={roleNotifications.filter((item) => !item.isRead).length}
@@ -652,7 +661,7 @@ export default function App() {
         onAccount={() => setSheet("login")}
         onClose={isTabPage ? closeToHome : undefined}
       />
-      <View style={styles.content}>
+      <View style={[styles.content, !isTabPage && { paddingBottom: insets.bottom }]}>
         {page === "home" && (
           <HomePage
             data={data}
@@ -994,6 +1003,7 @@ export default function App() {
         <TabBar
           active={page as Tab}
           cartCount={cart.length}
+          bottomInset={insets.bottom}
           onSelect={(tab) => setPage(tab)}
         />
       )}
@@ -5143,10 +5153,12 @@ function ModalCloseButton({
 function TabBar({
   active,
   cartCount,
+  bottomInset,
   onSelect,
 }: {
   active: Tab;
   cartCount: number;
+  bottomInset: number;
   onSelect: (tab: Tab) => void;
 }) {
   const items: { key: Tab; icon: string; label: string }[] = [
@@ -5157,7 +5169,15 @@ function TabBar({
     { key: "more", icon: "menu-outline", label: "더보기" },
   ];
   return (
-    <View style={styles.tabs}>
+    <View
+      style={[
+        styles.tabs,
+        {
+          minHeight: 60 + Math.max(bottomInset, 8),
+          paddingBottom: Math.max(bottomInset, 8),
+        },
+      ]}
+    >
       {items.map((item) => (
         <Pressable
           key={item.key}
