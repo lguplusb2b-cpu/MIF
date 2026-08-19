@@ -62,14 +62,16 @@ export function resolveDesiredDeliveryAt(method: DeliveryMethod, date: string, t
   return `${date}T${time || "09:00"}:00`;
 }
 
-export function validateCartCheckout(input: { cart: CartItem[]; address?: Address; method: DeliveryMethod | null }) {
+export function validateCartCheckout(input: { cart: CartItem[]; address?: Address; method: DeliveryMethod | null; bankAccountId?: string }) {
   if (!input.cart.length) return "장바구니가 비어있습니다.";
   const unavailable = input.cart.find((item) => item.stockStatus === "out_of_stock");
   if (unavailable) return `${unavailable.name}은(는) 품절되어 주문할 수 없습니다.`;
   if (!input.address) return "배송지를 선택해 주세요.";
   if (!input.method) return "배송 방법을 선택해 주세요.";
   const invalid = input.cart.find((item) => item.quantity < item.minOrderQty);
-  return invalid ? `${invalid.name}의 최소 주문 수량은 ${invalid.minOrderQty}개입니다.` : undefined;
+  if (invalid) return `${invalid.name}의 최소 주문 수량은 ${invalid.minOrderQty}개입니다.`;
+  if (!input.bankAccountId) return "결제 계좌가 등록되지 않았습니다. 관리자에게 결제 계좌 등록을 요청해 주세요.";
+  return undefined;
 }
 
 export function createMifOrder(input: { orders: Order[]; cart: CartItem[]; address: Address; deliveryMethod: Order["deliveryMethod"]; desiredDeliveryAt?: string; bankAccountId?: string; note?: string; companyName?: string }): Order {
@@ -77,6 +79,7 @@ export function createMifOrder(input: { orders: Order[]; cart: CartItem[]; addre
     cart: input.cart,
     address: input.address,
     method: input.deliveryMethod,
+    bankAccountId: input.bankAccountId,
   });
   if (checkoutError) throw new Error(checkoutError);
   const sequence = String(input.orders.length + 1).padStart(4, "0");

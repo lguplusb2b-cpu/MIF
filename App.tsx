@@ -88,7 +88,7 @@ import {
   ALL_PRODUCT_CATEGORY_ID,
   filterProductsForListing,
   getCategoryAfterSearchInput,
-  getProductSaveError,
+  getProductSaveErrors,
   PRODUCT_SORT_OPTIONS,
   saveProduct,
   sortProductsForListing,
@@ -286,6 +286,23 @@ function MifApp() {
   const [orderTo, setOrderTo] = useState("");
   const [adminCompanyQuery, setAdminCompanyQuery] = useState("");
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [feedback, setFeedback] = useState<{
+    title: string;
+    message: string;
+    tone: "error" | "success";
+  } | null>(null);
+
+  const showFeedback = (
+    title: string,
+    message: string,
+    tone: "error" | "success" = "error",
+  ) => setFeedback({ title, message, tone });
+
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = setTimeout(() => setFeedback(null), 5000);
+    return () => clearTimeout(timer);
+  }, [feedback]);
 
   const setPage = (next: Page) => {
     pageRef.current = next;
@@ -428,8 +445,13 @@ function MifApp() {
     };
   }, [session]);
   const addProductToCart = (product: Product) => {
+    if (isAdmin)
+      return showFeedback(
+        "관리자 발주 제한",
+        "관리자 계정은 상품 관리와 주문 처리만 할 수 있으며 발주를 생성할 수 없습니다.",
+      );
     if (product.stockStatus === "out_of_stock")
-      return Alert.alert(
+      return showFeedback(
         "품절 상품",
         "품절된 상품은 장바구니에 담을 수 없습니다.",
       );
@@ -457,6 +479,8 @@ function MifApp() {
     note?: string;
   }) => {
     try {
+      if (isAdmin)
+        throw new Error("관리자 계정은 주문을 생성할 수 없습니다.");
       const order = createMifOrder({
         orders: data.orders,
         cart,
@@ -484,7 +508,7 @@ function MifApp() {
         ),
       );
     } catch (error) {
-      Alert.alert(
+      showFeedback(
         "주문 확인",
         error instanceof Error ? error.message : "주문을 생성할 수 없습니다.",
       );
@@ -499,6 +523,9 @@ function MifApp() {
           item.id === order.id ? changed : item,
         ),
       };
+      setSelectedOrder((current) =>
+        current?.id === changed.id ? changed : current,
+      );
       await publishNotifications(
         next,
         notificationsForOrderStatus(
@@ -508,7 +535,7 @@ function MifApp() {
         ),
       );
     } catch (error) {
-      Alert.alert(
+      showFeedback(
         "상태 변경",
         error instanceof Error ? error.message : "상태를 변경할 수 없습니다.",
       );
@@ -520,7 +547,7 @@ function MifApp() {
   ) => {
     const approvedAccount =
       decision === "approved"
-        ? accountFromApprovedApplication({ ...application, status: "approved" })
+        ? await accountFromApprovedApplication({ ...application, status: "approved" })
         : null;
     const next = {
       ...data,
@@ -625,14 +652,17 @@ function MifApp() {
     const source = filterProductsForListing(data.products, {
       categoryId: productCategory,
       query: productQuery,
-    }).filter((product) =>
-      !favoritesOnly || data.favorites.includes(product.id),
+    }).filter(
+      (product) =>
+        (isAdmin || product.isActive !== false) &&
+        (!favoritesOnly || data.favorites.includes(product.id)),
     );
     return sortProductsForListing(source, productSort);
   }, [
     data.products,
     data.favorites,
     favoritesOnly,
+    isAdmin,
     productCategory,
     productQuery,
     productSort,
@@ -680,7 +710,28 @@ function MifApp() {
         onBack={isTabPage && page !== "home" ? goBack : undefined}
         onClose={isTabPage && page !== "home" ? goBack : undefined}
       />
-      <View style={[styles.content, !isTabPage && { paddingBottom: insets.bottom }]}>
+      {feedback && (
+        <View
+          style={[
+            styles.feedbackBanner,
+            feedback.tone === "error"
+              ? styles.feedbackBannerError
+              : styles.feedbackBannerSuccess,
+          ]}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.feedbackTitle}>{feedback.title}</Text>
+            <Text style={styles.feedbackMessage}>{feedback.message}</Text>
+          </View>
+          <Pressable
+            accessibilityLabel="안내 닫기"
+            onPress={() => setFeedback(null)}
+          >
+            {icon("close", palette.surface, 18)}
+          </Pressable>
+        </View>
+      )}
+      <View style={[styles.content, !isTabPage && { paddingBottom: insets.bottom }]}> 
         {page === "home" && (
           <HomePage
             data={data}
@@ -703,7 +754,7 @@ function MifApp() {
           <ProductsPage
             categories={productCategories}
             products={productList}
-            totalProductCount={data.products.length}
+            totalProductCount={data.products.filter((product) => isAdmin || product.isActive !== false).length}
             favorites={data.favorites}
             query={productQuery}
             category={productCategory}
@@ -734,6 +785,7 @@ function MifApp() {
         {page === "cart" && (
           <CartPage
             cart={cart}
+            isAdmin={isAdmin}
             addresses={data.addresses}
             banks={data.banks}
             total={cartTotal}
@@ -1033,10 +1085,11 @@ function MifApp() {
       {(["home", "products", "orders", "cart", "more"] as Page[]).includes(
         page,
       ) && (
-        <TabBar
-          active={page as Tab}
-          cartCount={cart.length}
-          bottomInset={insets.bottom}
+          <TabBar
+            active={page as Tab}
+            cartCount={cart.length}
+            isAdmin={isAdmin}
+            bottomInset={insets.bottom}
           onSelect={goToPage}
         />
       )}
@@ -1049,7 +1102,7 @@ function MifApp() {
         onSignup={() => setSheet("signup")}
         onPassword={() => setSheet("password")}
         onLogin={async (loginId, password) => {
-          const previewAccount = findPreviewAccount(
+          const previewAccount = await findPreviewAccount(
             data.previewAccounts,
             loginId,
             password,
@@ -1064,13 +1117,14 @@ function MifApp() {
               status: previewAccount.status,
             });
             setSheet(null);
-            return Alert.alert(
+            return showFeedback(
               "로그인 완료",
               `${previewAccount.name} ${previewAccount.role === "admin" ? "관리자" : "거래처"} 계정으로 로그인했습니다.`,
+              "success",
             );
           }
           if (!isMifApiConfigured())
-            return Alert.alert(
+            return showFeedback(
               "로그인",
               "아이디 또는 비밀번호가 올바르지 않습니다.",
             );
@@ -1086,8 +1140,9 @@ function MifApp() {
               status: user.status,
             });
             setSheet(null);
+            showFeedback("로그인 완료", "승인된 MIF 계정으로 로그인했습니다.", "success");
           } catch (error) {
-            Alert.alert(
+            showFeedback(
               "로그인",
               error instanceof Error ? error.message : "로그인할 수 없습니다.",
             );
@@ -1162,11 +1217,23 @@ function MifApp() {
             setEditingProduct(undefined);
             setSheet(null);
           } catch (error) {
-            Alert.alert(
+            showFeedback(
               "상품 저장",
               error instanceof Error ? error.message : "상품을 저장하지 못했습니다.",
             );
           }
+        }}
+        onDelete={async (productId) => {
+          const next = {
+            ...data,
+            products: data.products.filter((item) => item.id !== productId),
+            favorites: data.favorites.filter((id) => id !== productId),
+          };
+          setCart((current) => current.filter((item) => item.id !== productId));
+          await persist(next);
+          setEditingProduct(undefined);
+          setSheet(null);
+          showFeedback("상품 삭제 완료", "상품과 장바구니·찜 연결 정보를 정리했습니다.", "success");
         }}
         onAdd={addProductToCart}
         onFavorite={toggleFavorite}
@@ -1431,7 +1498,8 @@ function HomePage({
   const featured = [...data.products]
     .filter(
       (product) =>
-        product.featuredPriority !== undefined || product.badges.length,
+        (isAdmin || product.isActive !== false) &&
+        (product.featuredPriority !== undefined || product.badges.length),
     )
     .sort((a, b) => (a.featuredPriority ?? 99) - (b.featuredPriority ?? 99))
     .slice(0, 4);
@@ -1477,11 +1545,13 @@ function HomePage({
           label="상품 탐색"
           onPress={() => onPage("products")}
         />
-        <QuickCard
-          icon="cart-outline"
-          label={`장바구니 ${cartCount}`}
-          onPress={() => onPage("cart")}
-        />
+        {!isAdmin && (
+          <QuickCard
+            icon="cart-outline"
+            label={`장바구니 ${cartCount}`}
+            onPress={() => onPage("cart")}
+          />
+        )}
         <QuickCard
           icon={isAdmin ? "speedometer-outline" : "business-outline"}
           label={isAdmin ? "관리자" : "입점 문의"}
@@ -1765,6 +1835,7 @@ function ProductsPage({
 
 function CartPage({
   cart,
+  isAdmin,
   addresses,
   banks,
   total,
@@ -1776,6 +1847,7 @@ function CartPage({
   onContinueShopping,
 }: {
   cart: CartItem[];
+  isAdmin: boolean;
   addresses: Address[];
   banks: BankAccount[];
   total: number;
@@ -1804,6 +1876,7 @@ function CartPage({
   const [note, setNote] = useState("");
   const [courierConfirmVisible, setCourierConfirmVisible] = useState(false);
   const [deliveryDateVisible, setDeliveryDateVisible] = useState(false);
+  const [checkoutError, setCheckoutError] = useState("");
   const hasUnavailableItems = cart.some(
     (item) => item.stockStatus === "out_of_stock",
   );
@@ -1823,8 +1896,13 @@ function CartPage({
       cart,
       address: selectedAddress,
       method,
+      bankAccountId: bankId || undefined,
     });
-    if (error) return Alert.alert("주문 확인", error);
+    if (error) {
+      setCheckoutError(error);
+      return;
+    }
+    setCheckoutError("");
     onOrder({
       address: selectedAddress!,
       deliveryMethod: method!,
@@ -1860,7 +1938,15 @@ function CartPage({
             : undefined
         }
       />
-      {!cart.length ? (
+      {isAdmin ? (
+        <View style={styles.emptyWithAction}>
+          <InlineEmpty
+            icon="shield-checkmark-outline"
+            title="관리자 계정은 발주를 생성할 수 없습니다"
+            copy="관리자 업무 메뉴에서 상품·주문·결제 계좌를 관리해 주세요."
+          />
+        </View>
+      ) : !cart.length ? (
         <View style={styles.emptyWithAction}>
           <InlineEmpty
             icon="cart-outline"
@@ -1879,6 +1965,9 @@ function CartPage({
             contentContainerStyle={styles.list}
             ListFooterComponent={
               <View style={styles.checkoutPanel}>
+                {checkoutError ? (
+                  <Text style={styles.formError}>{checkoutError}</Text>
+                ) : null}
                 <Text style={styles.panelTitle}>📍 배송지 선택</Text>
                 {selectedAddress ? (
                   <View style={styles.addressSummary}>
@@ -1992,7 +2081,7 @@ function CartPage({
                   </Text>
                 </Pressable>
                 <Text style={styles.panelTitle}>결제 계좌</Text>
-                {banks.length ? (
+                {banks.some((bank) => bank.isActive) ? (
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -2010,8 +2099,8 @@ function CartPage({
                       ))}
                   </ScrollView>
                 ) : (
-                  <Text style={styles.helper}>
-                    결제 계좌는 관리자가 등록합니다.
+                  <Text style={styles.formError}>
+                    결제 계좌가 등록되지 않아 주문할 수 없습니다. 관리자에게 결제 계좌 등록을 요청해 주세요.
                   </Text>
                 )}
                 <Field
@@ -2530,18 +2619,22 @@ function MorePage({
           copy={session ? `${session.loginId} · ${role === "admin" ? "관리자" : "거래처"}` : "로그인, 비밀번호 재설정, 보안 정보를 관리합니다."}
           onPress={() => onPage("profile")}
         />
-        <MenuRow
-          icon="person-add-outline"
-          title="거래처 가입 신청"
-          copy="사업자등록증을 첨부해 거래처 가입 심사를 신청합니다."
-          onPress={() => onSheet("signup")}
-        />
-        <MenuRow
-          icon="key-outline"
-          title="비밀번호 재설정"
-          copy="등록 정보로 재설정 요청을 남깁니다."
-          onPress={() => onSheet("password")}
-        />
+        {role === "customer" && (
+          <>
+            <MenuRow
+              icon="person-add-outline"
+              title="거래처 가입 신청"
+              copy="사업자등록증을 첨부해 거래처 가입 심사를 신청합니다."
+              onPress={() => onSheet("signup")}
+            />
+            <MenuRow
+              icon="key-outline"
+              title="비밀번호 재설정"
+              copy="등록 정보로 재설정 요청을 남깁니다."
+              onPress={() => onSheet("password")}
+            />
+          </>
+        )}
       </MenuGroup>
       <MenuGroup title="주문·배송">
         <MenuRow
@@ -2653,12 +2746,14 @@ function ProfilePage({
         </View>
       </View>
       <MenuGroup title="계정 보안">
-        <MenuRow
-          icon="lock-closed-outline"
-          title="비밀번호 재설정"
-          copy="등록 정보로 본인 확인 요청을 남깁니다."
-          onPress={onPassword}
-        />
+        {role === "customer" && (
+          <MenuRow
+            icon="lock-closed-outline"
+            title="비밀번호 재설정"
+            copy="등록 정보로 본인 확인 요청을 남깁니다."
+            onPress={onPassword}
+          />
+        )}
         <MenuRow
           icon="shield-checkmark-outline"
           title="권한 상태"
@@ -4025,6 +4120,7 @@ function ProductSheet({
   isAdmin,
   onClose,
   onSave,
+  onDelete,
   onAdd,
   onFavorite,
   isFavorite,
@@ -4035,6 +4131,7 @@ function ProductSheet({
   isAdmin: boolean;
   onClose: () => void;
   onSave: (product: Product) => Promise<void>;
+  onDelete: (productId: string) => Promise<void>;
   onAdd: (product: Product) => void;
   onFavorite: (id: string) => void;
   isFavorite: boolean;
@@ -4052,6 +4149,7 @@ function ProductSheet({
   const [stockStatus, setStockStatus] = useState(
     product?.stockStatus ?? "in_stock",
   );
+  const [isActive, setIsActive] = useState(product?.isActive !== false);
   const [storageType, setStorageType] = useState<Product["storageType"]>(
     product?.storageType ?? "room_temp",
   );
@@ -4060,6 +4158,8 @@ function ProductSheet({
     product?.detailImageUris ?? [],
   );
   const [badges, setBadges] = useState<ProductBadge[]>(product?.badges ?? []);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   useEffect(() => {
     if (visible) {
       const defaultCategory = categories.find((item) => item.isActive);
@@ -4072,10 +4172,13 @@ function ProductSheet({
       setMinQty(product ? String(product.minOrderQty) : "1");
       setDescription(product?.description ?? "");
       setStockStatus(product?.stockStatus ?? "in_stock");
+      setIsActive(product?.isActive !== false);
       setStorageType(product?.storageType ?? "room_temp");
       setImageUri(product?.imageUri ?? "");
       setDetailImageUris(product?.detailImageUris ?? []);
       setBadges(product?.badges ?? []);
+      setFieldErrors({});
+      setDeleteConfirmVisible(false);
     }
   }, [visible, product, categories]);
   const pickMainImage = async () => {
@@ -4107,6 +4210,7 @@ function ProductSheet({
       basePrice: Number(price),
       minOrderQty: Math.max(1, Number(minQty) || 1),
       stockStatus,
+      isActive,
       storageType,
       description,
       imageUri: imageUri || undefined,
@@ -4116,8 +4220,12 @@ function ProductSheet({
       createdAt: product?.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    const error = getProductSaveError(nextProduct, categories);
-    if (error) return Alert.alert("입력 확인", error);
+    const errors = getProductSaveErrors(nextProduct, categories);
+    if (Object.keys(errors).length) {
+      setFieldErrors(errors);
+      return;
+    }
+    setFieldErrors({});
     await onSave(nextProduct);
   };
   if (!visible) return null;
@@ -4138,9 +4246,13 @@ function ProductSheet({
           <Field
             label="상품명"
             value={name}
-            onChangeText={setName}
+            onChangeText={(value) => {
+              setName(value);
+              setFieldErrors((current) => ({ ...current, name: "" }));
+            }}
             placeholder="상품명"
           />
+          {fieldErrors.name ? <Text style={styles.formError}>{fieldErrors.name}</Text> : null}
           <Text style={styles.fieldLabel}>카테고리</Text>
           <ScrollView
             horizontal
@@ -4155,15 +4267,20 @@ function ProductSheet({
                 onPress={() => {
                   setCategoryId(item.id);
                   setCategoryName(item.name);
+                  setFieldErrors((current) => ({ ...current, category: "" }));
                 }}
               />
             ))}
             <Chip
               label="직접 입력"
               active={!categoryId}
-              onPress={() => setCategoryId("")}
+              onPress={() => {
+                setCategoryId("");
+                setFieldErrors((current) => ({ ...current, category: "" }));
+              }}
             />
           </ScrollView>
+          {fieldErrors.category ? <Text style={styles.formError}>{fieldErrors.category}</Text> : null}
           {!categoryId && (
             <Field
               label="카테고리명"
@@ -4175,35 +4292,51 @@ function ProductSheet({
           <Field
             label="규격"
             value={spec}
-            onChangeText={setSpec}
+            onChangeText={(value) => {
+              setSpec(value);
+              setFieldErrors((current) => ({ ...current, spec: "" }));
+            }}
             placeholder="예: 1kg"
           />
+          {fieldErrors.spec ? <Text style={styles.formError}>{fieldErrors.spec}</Text> : null}
           <View style={styles.twoFields}>
             <View style={{ flex: 1 }}>
               <Field
                 label="단위"
                 value={unit}
-                onChangeText={setUnit}
+                onChangeText={(value) => {
+                  setUnit(value);
+                  setFieldErrors((current) => ({ ...current, unit: "" }));
+                }}
                 placeholder="개"
               />
+              {fieldErrors.unit ? <Text style={styles.formError}>{fieldErrors.unit}</Text> : null}
             </View>
             <View style={{ flex: 1 }}>
               <Field
                 label="최소 수량"
                 value={minQty}
-                onChangeText={setMinQty}
+                onChangeText={(value) => {
+                  setMinQty(value);
+                  setFieldErrors((current) => ({ ...current, minOrderQty: "" }));
+                }}
                 placeholder="1"
                 keyboardType="numeric"
               />
+              {fieldErrors.minOrderQty ? <Text style={styles.formError}>{fieldErrors.minOrderQty}</Text> : null}
             </View>
           </View>
           <Field
             label="단가"
             value={price}
-            onChangeText={setPrice}
+            onChangeText={(value) => {
+              setPrice(value);
+              setFieldErrors((current) => ({ ...current, basePrice: "" }));
+            }}
             placeholder="숫자만 입력"
             keyboardType="numeric"
           />
+          {fieldErrors.basePrice ? <Text style={styles.formError}>{fieldErrors.basePrice}</Text> : null}
           <Field
             label="상품 설명"
             value={description}
@@ -4239,6 +4372,24 @@ function ProductSheet({
           <Text style={styles.helper}>
             선택한 상태는 상품 목록과 상세 화면의 재고 배지에 즉시 표시됩니다.
           </Text>
+          <Text style={styles.fieldLabel}>판매 상태</Text>
+          <View style={styles.filterRow}>
+            <Chip
+              label="판매중"
+              active={isActive}
+              onPress={() => setIsActive(true)}
+            />
+            <Chip
+              label="판매중지"
+              active={!isActive}
+              onPress={() => setIsActive(false)}
+            />
+          </View>
+          {!isActive ? (
+            <Text style={styles.formError}>
+              판매중지 상품은 거래처 상품 목록과 주문 대상에서 제외됩니다.
+            </Text>
+          ) : null}
           <Text style={styles.fieldLabel}>보관 상태</Text>
           <View style={styles.filterRow}>
             {([
@@ -4274,6 +4425,43 @@ function ProductSheet({
             )}
           </View>
           <Primary text="저장" onPress={save} />
+          {product ? (
+            <Pressable
+              style={styles.deleteProductButton}
+              onPress={() => setDeleteConfirmVisible(true)}
+            >
+              <Text style={styles.deleteProductText}>상품 삭제</Text>
+            </Pressable>
+          ) : null}
+          <Modal
+            visible={deleteConfirmVisible}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setDeleteConfirmVisible(false)}
+          >
+            <View style={styles.confirmOverlay}>
+              <View style={styles.confirmCard}>
+                <Text style={styles.confirmTitle}>상품을 삭제할까요?</Text>
+                <Text style={styles.confirmCopy}>
+                  삭제한 상품은 복구할 수 없으며 장바구니와 찜 목록에서도 함께 제거됩니다.
+                </Text>
+                <View style={styles.confirmActions}>
+                  <Pressable
+                    style={styles.confirmCancel}
+                    onPress={() => setDeleteConfirmVisible(false)}
+                  >
+                    <Text style={styles.confirmCancelText}>취소</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.confirmDelete}
+                    onPress={() => product && void onDelete(product.id)}
+                  >
+                    <Text style={styles.confirmDeleteText}>삭제</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
         </>
       ) : (
         <>
@@ -5644,11 +5832,13 @@ function ModalCloseButton({
 function TabBar({
   active,
   cartCount,
+  isAdmin,
   bottomInset,
   onSelect,
 }: {
   active: Tab;
   cartCount: number;
+  isAdmin: boolean;
   bottomInset: number;
   onSelect: (tab: Tab) => void;
 }) {
@@ -5656,7 +5846,9 @@ function TabBar({
     { key: "home", icon: "home-outline", label: "홈" },
     { key: "products", icon: "cube-outline", label: "상품" },
     { key: "orders", icon: "receipt-outline", label: "주문" },
-    { key: "cart", icon: "cart-outline", label: "장바구니" },
+    ...(!isAdmin
+      ? [{ key: "cart" as Tab, icon: "cart-outline", label: "장바구니" }]
+      : []),
     { key: "more", icon: "menu-outline", label: "더보기" },
   ];
   return (
@@ -5737,6 +5929,20 @@ const styles: any = StyleSheet.create({
   },
   app: { flex: 1, backgroundColor: palette.bg },
   content: { flex: 1 },
+  feedbackBanner: {
+    marginHorizontal: 14,
+    marginTop: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  feedbackBannerError: { backgroundColor: palette.error },
+  feedbackBannerSuccess: { backgroundColor: palette.success },
+  feedbackTitle: { color: palette.surface, fontSize: 13, fontWeight: "800" },
+  feedbackMessage: { color: palette.surface, fontSize: 12, lineHeight: 17, marginTop: 2 },
   loading: {
     flex: 1,
     alignItems: "center",
@@ -5752,6 +5958,46 @@ const styles: any = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 12,
   },
+  formError: {
+    color: palette.error,
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 18,
+    marginTop: -5,
+    marginBottom: 8,
+  },
+  deleteProductButton: {
+    alignItems: "center",
+    paddingVertical: 13,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  deleteProductText: {
+    color: palette.error,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(16,42,67,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  confirmCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: palette.surface,
+    borderRadius: 18,
+    padding: 20,
+  },
+  confirmTitle: { color: palette.ink, fontSize: 18, fontWeight: "800" },
+  confirmCopy: { color: palette.muted, fontSize: 13, lineHeight: 20, marginTop: 8 },
+  confirmActions: { flexDirection: "row", gap: 8, marginTop: 20 },
+  confirmCancel: { flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10, backgroundColor: palette.aqua },
+  confirmDelete: { flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10, backgroundColor: palette.error },
+  confirmCancelText: { color: palette.teal, fontSize: 14, fontWeight: "800" },
+  confirmDeleteText: { color: palette.surface, fontSize: 14, fontWeight: "800" },
   appbar: {
     height: 62,
     paddingHorizontal: 18,

@@ -4,6 +4,7 @@ import type { Address, Product } from "./domain";
 
 const product: Product = { id: "p1", name: "MIF 상품", categoryName: "식품", spec: "1kg", unit: "개", basePrice: 1000, minOrderQty: 2, stockStatus: "in_stock", description: "", detailImageUris: [], badges: [], createdAt: "2026-08-19T00:00:00.000Z" };
 const address: Address = { id: "a1", label: "본사", recipient: "담당자", phone: "010-0000-0000", postalCode: "", address: "서울시", addressDetail: "", isDefault: true };
+const bankAccountId = "bank-1";
 
 describe("MIF 발주 워크플로", () => {
   it("동일 상품을 합산하고 수량·금액을 계산한다", () => {
@@ -15,7 +16,7 @@ describe("MIF 발주 워크플로", () => {
   });
 
   it("배송지 스냅샷으로 주문을 생성하고 정상 상태만 전이한다", () => {
-    const order = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier" });
+    const order = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", bankAccountId });
     expect(order.status).toBe("RECEIVED");
     expect(order.addressSnapshot?.recipient).toBe("담당자");
     expect(advanceOrder(order).status).toBe("PAID");
@@ -23,14 +24,14 @@ describe("MIF 발주 워크플로", () => {
   });
 
   it("기간·상태·거래처 기준으로 주문을 필터링한다", () => {
-    const first = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", companyName: "MIF 거래처" });
+    const first = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", bankAccountId, companyName: "MIF 거래처" });
     const second = { ...first, id: "ord_2", status: "PAID" as const, createdAt: "2026-08-18T00:00:00.000Z" };
     expect(filterOrders([first, second], { status: "PAID" })).toEqual([second]);
     expect(filterOrders([first, second], { companyName: "MIF" })).toHaveLength(2);
   });
 
   it("기간 조회에서 날짜·시간 범위를 적용하고 날짜만 입력하면 하루 전체를 조회한다", () => {
-    const morning = { ...createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier" }), id: "ord_morning", createdAt: "2026-08-19T09:00:00.000Z" };
+    const morning = { ...createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", bankAccountId }), id: "ord_morning", createdAt: "2026-08-19T09:00:00.000Z" };
     const afternoon = { ...morning, id: "ord_afternoon", createdAt: "2026-08-19T15:00:00.000Z" };
     expect(filterOrders([morning, afternoon], { from: "2026-08-19T12:00:00.000Z" })).toEqual([afternoon]);
     expect(filterOrders([morning, afternoon], { to: "2026-08-19" })).toEqual([morning, afternoon]);
@@ -54,7 +55,8 @@ describe("MIF 발주 워크플로", () => {
     expect(validateCartCheckout({ cart: [], address, method: "courier" })).toBe("장바구니가 비어있습니다.");
     expect(validateCartCheckout({ cart: addToCart([], product), method: "courier" })).toBe("배송지를 선택해 주세요.");
     expect(validateCartCheckout({ cart: addToCart([], product), address, method: null })).toBe("배송 방법을 선택해 주세요.");
-    expect(validateCartCheckout({ cart: [{ ...product, quantity: 1 }], address, method: "truck" })).toBe("MIF 상품의 최소 주문 수량은 2개입니다.");
+    expect(validateCartCheckout({ cart: [{ ...product, quantity: 1 }], address, method: "truck", bankAccountId })).toBe("MIF 상품의 최소 주문 수량은 2개입니다.");
+    expect(validateCartCheckout({ cart: addToCart([], product), address, method: "courier" })).toContain("결제 계좌");
   });
 
   it("관리자 상품 변경이 장바구니의 가격·최소 수량·재고 상태에 즉시 반영된다", () => {
@@ -77,6 +79,6 @@ describe("MIF 발주 워크플로", () => {
   it("품절로 변경된 장바구니 상품은 주문 생성을 차단한다", () => {
     const unavailableCart = [{ ...product, stockStatus: "out_of_stock" as const, quantity: 2 }];
     expect(validateCartCheckout({ cart: unavailableCart, address, method: "courier" })).toBe("MIF 상품은(는) 품절되어 주문할 수 없습니다.");
-    expect(() => createMifOrder({ orders: [], cart: unavailableCart, address, deliveryMethod: "courier" })).toThrow("품절되어 주문할 수 없습니다.");
+    expect(() => createMifOrder({ orders: [], cart: unavailableCart, address, deliveryMethod: "courier", bankAccountId })).toThrow("품절되어 주문할 수 없습니다.");
   });
 });

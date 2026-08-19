@@ -68,6 +68,8 @@ export type Product = {
   basePrice: number;
   minOrderQty: number;
   stockStatus: ProductStockStatus;
+  /** false이면 관리자만 관리 목록에서 확인하며 거래처 주문 대상에서 제외한다. */
+  isActive?: boolean;
   storageType?: ProductStorageType;
   description: string;
   imageUri?: string;
@@ -142,7 +144,8 @@ export type SignupApplication = {
 export type PreviewAccount = {
   id: string;
   loginId: string;
-  password: string;
+  /** 로컬 테스트·미리보기용 SHA-256 비밀번호 해시이며 운영 계정은 API에서 검증한다. */
+  passwordHash: string;
   name: string;
   companyName?: string;
   role: UserRole;
@@ -250,7 +253,7 @@ export const MIF_TEST_ACCOUNTS: PreviewAccount[] = [
   {
     id: "mif-test-customer",
     loginId: "mif",
-    password: "mif",
+    passwordHash: "26af1d520f6bca9917be5726903b77fe8d9a86ae845b9dc68063d1c485d552eb",
     name: "MIF 거래처 테스트",
     companyName: "MIF 거래처",
     role: "customer",
@@ -259,7 +262,7 @@ export const MIF_TEST_ACCOUNTS: PreviewAccount[] = [
   {
     id: "mif-test-admin",
     loginId: "admin",
-    password: "admin1234",
+    passwordHash: "d48aff5beae42caefb453122cc213bf542b13249e086731a01368ebceecd2daa",
     name: "MIF 관리자 테스트",
     role: "admin",
     status: "active",

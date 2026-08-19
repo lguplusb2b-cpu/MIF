@@ -5,6 +5,7 @@ import {
   filterProductsForListing,
   getCategoryAfterSearchInput,
   getProductSaveError,
+  getProductSaveErrors,
   saveProduct,
   sortProductsForListing,
 } from "./product-workflows";
@@ -39,6 +40,15 @@ describe("상품 등록 업무 규칙", () => {
     expect(getProductSaveError({ ...createProduct(), minOrderQty: 1.5 }, data.categories)).toBe(
       "최소 주문 수량은 1개 이상의 정수여야 합니다.",
     );
+    expect(
+      getProductSaveErrors(
+        { ...createProduct(), name: "", basePrice: 0 },
+        data.categories,
+      ),
+    ).toMatchObject({
+      name: "상품명을 입력해 주세요.",
+      basePrice: "단가는 0원보다 큰 숫자로 입력해 주세요.",
+    });
   });
 
   it("저장한 상품은 활성 카테고리명·재고·상세 이미지를 보존한다", () => {
@@ -50,6 +60,11 @@ describe("상품 등록 업무 규칙", () => {
     expect(saved.stockStatus).toBe("in_stock");
     expect(saved.storageType).toBe("refrigerated");
     expect(saved.detailImageUris).toEqual(["file://detail-1.jpg"]);
+    expect(saved.isActive).toBe(true);
+    expect(
+      saveProduct(data, { ...createProduct(), isActive: false }, data.categories)
+        .products[0].isActive,
+    ).toBe(false);
   });
 });
 

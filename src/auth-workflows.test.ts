@@ -32,7 +32,7 @@ describe("MIF 인증·가입 승인 워크플로", () => {
     ).toBeNull();
   });
 
-  it("관리자 승인된 신청만 활성 거래처 계정으로 전환한다", () => {
+  it("관리자 승인된 신청만 해시 비밀번호의 활성 거래처 계정으로 전환한다", () => {
     const account = accountFromApprovedApplication(application);
     expect(account?.role).toBe("customer");
     expect(
@@ -41,10 +41,11 @@ describe("MIF 인증·가입 승인 워크플로", () => {
     expect(
       findPreviewAccount([account!], "test-user", "wrong"),
     ).toBeUndefined();
+    expect(account?.passwordHash).not.toContain("pass1234");
     expect(accountFromApprovedApplication({ ...application, status: "pending" })).toBeNull();
   });
 
-  it("요청된 거래처·관리자 테스트 계정으로 로그인한다", () => {
+  it("요청된 거래처·관리자 테스트 계정의 해시 비밀번호를 검증한다", () => {
     expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "mif", "mif")?.role).toBe(
       "customer",
     );

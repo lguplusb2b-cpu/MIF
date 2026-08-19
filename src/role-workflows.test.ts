@@ -6,7 +6,7 @@ const accounts: PreviewAccount[] = [
   {
     id: "admin-1",
     loginId: "admin",
-    password: "password",
+    passwordHash: "test-hash",
     name: "관리자",
     role: "admin",
     status: "active",
@@ -14,7 +14,7 @@ const accounts: PreviewAccount[] = [
   {
     id: "customer-1",
     loginId: "customer",
-    password: "password",
+    passwordHash: "test-hash",
     name: "거래처 담당자",
     companyName: "MIF 거래처",
     role: "customer",

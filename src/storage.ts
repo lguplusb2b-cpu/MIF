@@ -16,7 +16,9 @@ function mergeLocalAccounts(accounts: PreviewAccount[] = []) {
     ...accounts.filter(
       (account) =>
         !requiredIds.has(account.loginId) &&
-        !legacyPreviewIds.has(account.loginId),
+        !legacyPreviewIds.has(account.loginId) &&
+        typeof account.passwordHash === "string" &&
+        account.passwordHash.length === 64,
     ),
   ];
 }

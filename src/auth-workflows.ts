@@ -1,4 +1,12 @@
-import type { PreviewAccount, SignupApplication } from "./domain";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
+import { type PreviewAccount, type SignupApplication } from "./domain";
+
+const LOCAL_AUTH_NAMESPACE = "mif-local-auth-v1";
+
+export function hashLocalPassword(password: string) {
+  return bytesToHex(sha256(utf8ToBytes(`${LOCAL_AUTH_NAMESPACE}:${password}`)));
+}
 
 export function getSignupCredentialError(
   loginId: string,
@@ -16,10 +24,11 @@ export function findPreviewAccount(
   loginId: string,
   password: string,
 ) {
+  const passwordHash = hashLocalPassword(password);
   return accounts.find(
     (account) =>
       account.loginId === loginId.trim() &&
-      account.password === password &&
+      account.passwordHash === passwordHash &&
       account.status === "active",
   );
 }
@@ -32,7 +41,7 @@ export function accountFromApprovedApplication(
   return {
     id: `account_${application.id}`,
     loginId: application.requestedLoginId,
-    password: application.requestedPassword,
+    passwordHash: hashLocalPassword(application.requestedPassword),
     name: application.contactName,
     companyName: application.companyName,
     role: "customer",

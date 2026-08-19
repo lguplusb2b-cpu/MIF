@@ -3,6 +3,14 @@ import type { Category, MifData, Product } from "./domain";
 export const ALL_PRODUCT_CATEGORY_ID = "ALL" as const;
 
 export type ProductSortOption = "popular" | "priceHigh" | "priceLow" | "newest";
+export type ProductSaveField =
+  | "name"
+  | "category"
+  | "spec"
+  | "unit"
+  | "basePrice"
+  | "minOrderQty"
+  | "detailImages";
 
 export const PRODUCT_SORT_OPTIONS: ReadonlyArray<{
   id: ProductSortOption;
@@ -55,20 +63,28 @@ export function sortProductsForListing(
   });
 }
 
-export function getProductSaveError(product: Product, categories: Category[]): string | null {
-  if (!product.name.trim()) return "상품명을 입력해 주세요.";
-  if (!product.categoryId && !product.categoryName.trim()) return "카테고리를 선택하거나 입력해 주세요.";
-  if (!product.spec.trim()) return "규격을 입력해 주세요.";
-  if (!product.unit.trim()) return "단위를 입력해 주세요.";
+export function getProductSaveErrors(
+  product: Product,
+  categories: Category[],
+): Partial<Record<ProductSaveField, string>> {
+  const errors: Partial<Record<ProductSaveField, string>> = {};
+  if (!product.name.trim()) errors.name = "상품명을 입력해 주세요.";
+  if (!product.categoryId && !product.categoryName.trim()) errors.category = "카테고리를 선택하거나 입력해 주세요.";
+  if (!product.spec.trim()) errors.spec = "규격을 입력해 주세요.";
+  if (!product.unit.trim()) errors.unit = "단위를 입력해 주세요.";
   if (!Number.isFinite(product.basePrice) || product.basePrice <= 0)
-    return "단가는 0원보다 큰 숫자로 입력해 주세요.";
+    errors.basePrice = "단가는 0원보다 큰 숫자로 입력해 주세요.";
   if (!Number.isInteger(product.minOrderQty) || product.minOrderQty < 1)
-    return "최소 주문 수량은 1개 이상의 정수여야 합니다.";
+    errors.minOrderQty = "최소 주문 수량은 1개 이상의 정수여야 합니다.";
   const category = categories.find((item) => item.id === product.categoryId);
   if (product.categoryId && (!category || !category.isActive))
-    return "사용 중인 카테고리를 선택해 주세요.";
-  if (product.detailImageUris.length > 5) return "상세 이미지는 최대 5장까지 등록할 수 있습니다.";
-  return null;
+    errors.category = "사용 중인 카테고리를 선택해 주세요.";
+  if (product.detailImageUris.length > 5) errors.detailImages = "상세 이미지는 최대 5장까지 등록할 수 있습니다.";
+  return errors;
+}
+
+export function getProductSaveError(product: Product, categories: Category[]): string | null {
+  return Object.values(getProductSaveErrors(product, categories))[0] ?? null;
 }
 
 export function normalizeProductForSave(product: Product, categories: Category[]): Product {
@@ -82,6 +98,7 @@ export function normalizeProductForSave(product: Product, categories: Category[]
     unit: product.unit.trim(),
     basePrice: Math.floor(product.basePrice),
     minOrderQty: Math.max(1, Math.floor(product.minOrderQty)),
+    isActive: product.isActive !== false,
     description: product.description.trim(),
     detailImageUris: product.detailImageUris.filter(Boolean).slice(0, 5),
     updatedAt: new Date().toISOString(),
