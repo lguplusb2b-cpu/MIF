@@ -4388,9 +4388,10 @@ function OrderSheet({
         )}
       </View>
       <View style={styles.actionRow}>
-        <Secondary text="재주문" onPress={() => onReorder(order)} />
+        <Secondary compact text="재주문" onPress={() => onReorder(order)} />
         {order.status !== "CANCELED" && order.status !== "DELIVERED" && (
           <Secondary
+            compact
             text="주문 취소"
             tone="error"
             onPress={() => onStatus(order, "CANCELED")}
@@ -4398,12 +4399,14 @@ function OrderSheet({
         )}
         {isAdmin && next && (
           <Primary
+            compact
             text={`${orderStatusLabel[next]} 처리`}
             onPress={() => onStatus(order)}
           />
         )}
         {isAdmin && (
           <Secondary
+            compact
             text="주문 삭제"
             tone="error"
             onPress={() => onDelete(order.id)}
@@ -4585,19 +4588,27 @@ function Primary({
   text,
   onPress,
   disabled = false,
+  compact = false,
 }: {
   text: string;
   onPress: () => void;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   return (
     <Pressable
       accessibilityState={{ disabled }}
       disabled={disabled}
-      style={[styles.primaryButton, disabled && styles.primaryButtonDisabled]}
+      style={[
+        styles.primaryButton,
+        compact && styles.primaryButtonCompact,
+        disabled && styles.primaryButtonDisabled,
+      ]}
       onPress={onPress}
     >
-      <Text style={styles.primaryText}>{text}</Text>
+      <Text style={[styles.primaryText, compact && styles.primaryTextCompact]}>
+        {text}
+      </Text>
     </Pressable>
   );
 }
@@ -4605,15 +4616,18 @@ function Secondary({
   text,
   onPress,
   tone,
+  compact = false,
 }: {
   text: string;
   onPress: () => void;
   tone?: "error";
+  compact?: boolean;
 }) {
   return (
     <Pressable
       style={[
         styles.secondaryButton,
+        compact && styles.secondaryButtonCompact,
         tone === "error" && {
           borderColor: "#FECDCA",
           backgroundColor: "#FFF5F4",
@@ -4624,6 +4638,7 @@ function Secondary({
       <Text
         style={[
           styles.secondaryText,
+          compact && styles.secondaryTextCompact,
           tone === "error" && { color: palette.error },
         ]}
       >
@@ -5007,9 +5022,9 @@ const styles: any = StyleSheet.create({
     fontWeight: "900",
   },
   addCart: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: palette.teal,
@@ -5056,7 +5071,12 @@ const styles: any = StyleSheet.create({
     borderRadius: 13,
   },
   searchInput: { flex: 1, color: palette.ink, fontSize: 13 },
-  chipRow: { paddingHorizontal: 18, paddingVertical: 8, gap: 7 },
+  chipRow: {
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    gap: 7,
+    alignItems: "center",
+  },
   filterRow: {
     paddingHorizontal: 18,
     paddingVertical: 5,
@@ -5065,12 +5085,15 @@ const styles: any = StyleSheet.create({
     gap: 7,
   },
   chip: {
+    minHeight: 32,
     paddingHorizontal: 11,
-    paddingVertical: 7,
+    paddingVertical: 5,
     borderRadius: 18,
     borderColor: palette.line,
     borderWidth: 1,
     backgroundColor: palette.surface,
+    alignItems: "center",
+    justifyContent: "center",
   },
   chipActive: { backgroundColor: palette.teal, borderColor: palette.teal },
   chipText: { color: palette.muted, fontSize: 11, fontWeight: "800" },
@@ -5163,8 +5186,15 @@ const styles: any = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  primaryButtonCompact: {
+    minHeight: 36,
+    minWidth: 82,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
   primaryButtonDisabled: { backgroundColor: "#98A2B3" },
   primaryText: { color: "#fff", fontSize: 13, fontWeight: "900" },
+  primaryTextCompact: { fontSize: 11 },
   secondaryButton: {
     minHeight: 42,
     borderRadius: 11,
@@ -5176,7 +5206,16 @@ const styles: any = StyleSheet.create({
     justifyContent: "center",
     flex: 1,
   },
+  secondaryButtonCompact: {
+    flexGrow: 0,
+    flexBasis: "auto",
+    minHeight: 36,
+    minWidth: 72,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
   secondaryText: { color: palette.teal, fontSize: 12, fontWeight: "900" },
+  secondaryTextCompact: { fontSize: 11 },
   periodBox: {
     marginHorizontal: 18,
     padding: 12,
@@ -5207,7 +5246,9 @@ const styles: any = StyleSheet.create({
     marginTop: 5,
     borderRadius: 10,
     backgroundColor: "#F4EBFF",
-    padding: 11,
+    minHeight: 38,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     alignItems: "center",
   },
   bulkText: { color: palette.purple, fontSize: 12, fontWeight: "900" },
@@ -5361,7 +5402,7 @@ const styles: any = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 5,
   },
-  actionRow: { flexDirection: "row", gap: 8, marginTop: 11 },
+  actionRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 11 },
   unread: { borderColor: palette.teal, backgroundColor: "#F0FDFA" },
   tabs: {
     minHeight: 68,
