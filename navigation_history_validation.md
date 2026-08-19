@@ -17,3 +17,14 @@
 5. 세부 화면에는 `BackHeader`의 뒤로가기와 종료(X)가 함께 표시되는 것을 확인했고, 루트 탭은 앱 바의 뒤로가기·종료 제어를 사용한다.
 
 웹 미리보기에서는 Android의 실제 하드웨어 뒤로가기 신호를 생성할 수 없으므로, 해당 분기는 `BackHandler` 구현과 탐색 이력 단위 테스트로 확인했다. 실제 Android APK에서는 시스템 뒤로가기가 앱을 이탈하지 않고 위 우선순위에 따라 시트·직전 화면을 닫는다.
+
+## Android APK 업데이트 빌드
+
+기존 APK의 원격 Android version code가 `2`임을 확인하고, 업데이트 설치가 가능하도록 원격 version code를 `3`으로 설정했다. EAS 빌드 `f566af9d-0abe-4133-964f-5cb4931b8bcd`는 버전 `1.0.2 (3)`과 커밋 `4218103`을 사용하며, 확인 시점에는 Gradle 릴리스 패키징(`Run gradlew`)이 진행 중이었다. 현재 로그에는 네이티브 라이브러리의 사용 중단 경고만 있고 빌드 실패 메시지는 없었다.
+
+EAS 대시보드 재확인 시에도 빌드는 진행 중이며, Gradle이 `react-native-reanimated`·`react-native-gesture-handler` 및 앱의 Android ABI별 CMake·릴리스 리소스 작업을 수행하고 있었다. 빌드 버전은 계속 `1.0.2 (3)`으로 표시됐고, 오류·중단 메시지는 확인되지 않았다.
+
+EAS 빌드는 `FINISHED` 상태로 완료됐고 설치용 APK 아티팩트가 생성됐다. 이 APK는 `1.0.2 (3)`이므로 기존 version code `2` 설치본을 삭제하지 않고 업데이트할 수 있다.
+
+- **APK 다운로드:** https://expo.dev/artifacts/eas/9ua6FHvzAqvs2KXlEzo0ird1xoERcP_W7W5LkoQt5P0.apk
+- **EAS 빌드 상세:** https://expo.dev/accounts/greencart7/projects/mif/builds/f566af9d-0abe-4133-964f-5cb4931b8bcd
