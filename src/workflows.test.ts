@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addToCart, advanceOrder, canChooseDesiredDeliveryAt, cartAmount, createMifOrder, filterOrders, quickOrderRange, resolveDesiredDeliveryAt, setCartQuantity, validateCartCheckout } from "./workflows";
+import { addToCart, advanceOrder, canChooseDesiredDeliveryAt, cartAmount, createMifOrder, filterOrders, quickOrderRange, reconcileCartWithProducts, resolveDesiredDeliveryAt, setCartQuantity, validateCartCheckout } from "./workflows";
 import type { Address, Product } from "./domain";
 
 const product: Product = { id: "p1", name: "MIF 상품", categoryName: "식품", spec: "1kg", unit: "개", basePrice: 1000, minOrderQty: 2, stockStatus: "in_stock", description: "", detailImageUris: [], badges: [], createdAt: "2026-08-19T00:00:00.000Z" };
@@ -55,5 +55,28 @@ describe("MIF 발주 워크플로", () => {
     expect(validateCartCheckout({ cart: addToCart([], product), method: "courier" })).toBe("배송지를 선택해 주세요.");
     expect(validateCartCheckout({ cart: addToCart([], product), address, method: null })).toBe("배송 방법을 선택해 주세요.");
     expect(validateCartCheckout({ cart: [{ ...product, quantity: 1 }], address, method: "truck" })).toBe("MIF 상품의 최소 주문 수량은 2개입니다.");
+  });
+
+  it("관리자 상품 변경이 장바구니의 가격·최소 수량·재고 상태에 즉시 반영된다", () => {
+    const cart = addToCart([], product);
+    const updated = {
+      ...product,
+      basePrice: 1200,
+      minOrderQty: 3,
+      stockStatus: "out_of_stock" as const,
+    };
+    const synced = reconcileCartWithProducts(cart, [updated]);
+    expect(synced[0]).toMatchObject({
+      basePrice: 1200,
+      minOrderQty: 3,
+      quantity: 3,
+      stockStatus: "out_of_stock",
+    });
+  });
+
+  it("품절로 변경된 장바구니 상품은 주문 생성을 차단한다", () => {
+    const unavailableCart = [{ ...product, stockStatus: "out_of_stock" as const, quantity: 2 }];
+    expect(validateCartCheckout({ cart: unavailableCart, address, method: "courier" })).toBe("MIF 상품은(는) 품절되어 주문할 수 없습니다.");
+    expect(() => createMifOrder({ orders: [], cart: unavailableCart, address, deliveryMethod: "courier" })).toThrow("품절되어 주문할 수 없습니다.");
   });
 });

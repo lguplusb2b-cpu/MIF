@@ -42,6 +42,17 @@ export function setCartQuantity(items: CartItem[], productId: string, quantity: 
   return items.map((item) => item.id !== productId ? item : { ...item, quantity: Math.max(item.minOrderQty, quantity) });
 }
 
+export function reconcileCartWithProducts(items: CartItem[], products: Product[]): CartItem[] {
+  return items.map((item) => {
+    const latest = products.find((product) => product.id === item.id);
+    if (!latest) return { ...item, stockStatus: "out_of_stock" };
+    return {
+      ...latest,
+      quantity: Math.max(item.quantity, latest.minOrderQty),
+    };
+  });
+}
+
 export function cartAmount(items: CartItem[]) { return items.reduce((sum, item) => sum + item.basePrice * item.quantity, 0); }
 
 export function canChooseDesiredDeliveryAt(method: DeliveryMethod | null) { return method !== "courier"; }
@@ -53,6 +64,8 @@ export function resolveDesiredDeliveryAt(method: DeliveryMethod, date: string, t
 
 export function validateCartCheckout(input: { cart: CartItem[]; address?: Address; method: DeliveryMethod | null }) {
   if (!input.cart.length) return "장바구니가 비어있습니다.";
+  const unavailable = input.cart.find((item) => item.stockStatus === "out_of_stock");
+  if (unavailable) return `${unavailable.name}은(는) 품절되어 주문할 수 없습니다.`;
   if (!input.address) return "배송지를 선택해 주세요.";
   if (!input.method) return "배송 방법을 선택해 주세요.";
   const invalid = input.cart.find((item) => item.quantity < item.minOrderQty);
@@ -60,8 +73,12 @@ export function validateCartCheckout(input: { cart: CartItem[]; address?: Addres
 }
 
 export function createMifOrder(input: { orders: Order[]; cart: CartItem[]; address: Address; deliveryMethod: Order["deliveryMethod"]; desiredDeliveryAt?: string; bankAccountId?: string; note?: string; companyName?: string }): Order {
-  if (!input.cart.length) throw new Error("장바구니에 상품을 담아 주세요.");
-  if (!input.address.address.trim() || !input.address.recipient.trim()) throw new Error("배송지를 선택해 주세요.");
+  const checkoutError = validateCartCheckout({
+    cart: input.cart,
+    address: input.address,
+    method: input.deliveryMethod,
+  });
+  if (checkoutError) throw new Error(checkoutError);
   const sequence = String(input.orders.length + 1).padStart(4, "0");
   return {
     id: makeId("ord"), orderNumber: `MIF-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${sequence}`,

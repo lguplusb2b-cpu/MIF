@@ -88,6 +88,7 @@ import {
   createMifOrder,
   filterOrders,
   quickOrderRange,
+  reconcileCartWithProducts,
   resolveDesiredDeliveryAt,
   setCartQuantity,
   validateCartCheckout,
@@ -269,6 +270,9 @@ function MifApp() {
     setData(next);
     await saveMifData(next);
   };
+  useEffect(() => {
+    setCart((current) => reconcileCartWithProducts(current, data.products));
+  }, [data.products]);
   const loadPreviewScenario = async () => {
     await persist(createPreviewMifData());
     setCart([]);
@@ -1705,6 +1709,9 @@ function CartPage({
   const [note, setNote] = useState("");
   const [courierConfirmVisible, setCourierConfirmVisible] = useState(false);
   const [deliveryDateVisible, setDeliveryDateVisible] = useState(false);
+  const hasUnavailableItems = cart.some(
+    (item) => item.stockStatus === "out_of_stock",
+  );
   const selectedAddress =
     addresses.find((item) => item.id === addressId) ??
     addresses.find((item) => item.isDefault) ??
@@ -1936,18 +1943,35 @@ function CartPage({
                   <Text style={styles.productPrice}>
                     {money(item.basePrice * item.quantity)}
                   </Text>
+                  {item.stockStatus === "out_of_stock" && (
+                    <Text style={styles.cartStockWarning}>
+                      관리자 재고 상태 변경으로 품절된 상품입니다.
+                    </Text>
+                  )}
                 </View>
                 <View style={styles.quantity}>
                   <Pressable
                     accessibilityLabel={`${item.name} 수량 감소`}
+                    disabled={item.stockStatus === "out_of_stock"}
                     onPress={() => onQuantity(item.id, item.quantity - 1)}
+                    style={
+                      item.stockStatus === "out_of_stock"
+                        ? styles.quantityDisabled
+                        : undefined
+                    }
                   >
                     {icon("remove-circle-outline")}
                   </Pressable>
                   <Text style={styles.quantityText}>{item.quantity}</Text>
                   <Pressable
                     accessibilityLabel={`${item.name} 수량 증가`}
+                    disabled={item.stockStatus === "out_of_stock"}
                     onPress={() => onQuantity(item.id, item.quantity + 1)}
+                    style={
+                      item.stockStatus === "out_of_stock"
+                        ? styles.quantityDisabled
+                        : undefined
+                    }
                   >
                     {icon("add-circle-outline")}
                   </Pressable>
@@ -1990,8 +2014,17 @@ function CartPage({
                 </Text>
               )}
             </View>
-            <Pressable style={styles.primaryButton} onPress={checkout}>
-              <Text style={styles.primaryText}>주문하기</Text>
+            <Pressable
+              disabled={hasUnavailableItems}
+              style={[
+                styles.primaryButton,
+                hasUnavailableItems && styles.primaryButtonDisabled,
+              ]}
+              onPress={checkout}
+            >
+              <Text style={styles.primaryText}>
+                {hasUnavailableItems ? "품절 상품 확인" : "주문하기"}
+              </Text>
             </Pressable>
           </View>
         </>
@@ -5848,6 +5881,13 @@ const styles: any = StyleSheet.create({
     gap: 10,
   },
   quantity: { flexDirection: "row", alignItems: "center", gap: 6 },
+  quantityDisabled: { opacity: 0.35 },
+  cartStockWarning: {
+    color: palette.error,
+    fontSize: 10,
+    fontWeight: "800",
+    marginTop: 3,
+  },
   quantityText: {
     color: palette.ink,
     fontSize: 14,
