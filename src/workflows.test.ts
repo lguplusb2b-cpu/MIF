@@ -29,6 +29,13 @@ describe("MIF 발주 워크플로", () => {
     expect(filterOrders([first, second], { companyName: "MIF" })).toHaveLength(2);
   });
 
+  it("기간 조회에서 날짜·시간 범위를 적용하고 날짜만 입력하면 하루 전체를 조회한다", () => {
+    const morning = { ...createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier" }), id: "ord_morning", createdAt: "2026-08-19T09:00:00.000Z" };
+    const afternoon = { ...morning, id: "ord_afternoon", createdAt: "2026-08-19T15:00:00.000Z" };
+    expect(filterOrders([morning, afternoon], { from: "2026-08-19T12:00:00.000Z" })).toEqual([afternoon]);
+    expect(filterOrders([morning, afternoon], { to: "2026-08-19" })).toEqual([morning, afternoon]);
+  });
+
   it("택배는 희망일을 저장하지 않고 용달·픽업은 날짜와 시간을 저장한다", () => {
     expect(canChooseDesiredDeliveryAt("courier")).toBe(false);
     expect(resolveDesiredDeliveryAt("courier", "2026-08-20", "10:30")).toBeUndefined();

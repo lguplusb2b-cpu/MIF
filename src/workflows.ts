@@ -47,11 +47,21 @@ export function advanceOrder(order: Order, next?: OrderStatus): Order {
 }
 
 export function filterOrders(orders: Order[], filters: { status?: OrderStatus | "ALL"; from?: string; to?: string; companyName?: string }) {
+  const rangeBoundary = (value: string | undefined, edge: "start" | "end") => {
+    if (!value) return undefined;
+    const normalized = value.includes("T")
+      ? value
+      : `${value}T${edge === "start" ? "00:00:00" : "23:59:59.999"}`;
+    const timestamp = Date.parse(normalized);
+    return Number.isNaN(timestamp) ? undefined : timestamp;
+  };
+  const fromTimestamp = rangeBoundary(filters.from, "start");
+  const toTimestamp = rangeBoundary(filters.to, "end");
   return orders.filter((order) => {
-    const day = order.createdAt.slice(0, 10);
+    const createdAtTimestamp = Date.parse(order.createdAt);
     return (!filters.status || filters.status === "ALL" || order.status === filters.status)
-      && (!filters.from || day >= filters.from)
-      && (!filters.to || day <= filters.to)
+      && (fromTimestamp === undefined || createdAtTimestamp >= fromTimestamp)
+      && (toTimestamp === undefined || createdAtTimestamp <= toTimestamp)
       && (!filters.companyName || (order.companyName ?? "").includes(filters.companyName));
   });
 }

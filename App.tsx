@@ -113,6 +113,46 @@ const stockStatusPresentation: Record<
     backgroundColor: "#FEF3F2",
   },
 };
+
+const timePickerOptions = [
+  "00:00",
+  "06:00",
+  "09:00",
+  "10:00",
+  "11:00",
+  "12:00",
+  "13:00",
+  "14:00",
+  "15:00",
+  "16:00",
+  "17:00",
+  "18:00",
+  "21:00",
+  "23:59",
+];
+
+function dateAtOffset(offset: number) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + offset);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dateChoiceLabel(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  const weekday = ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
+  return `${month}/${day} (${weekday})`;
+}
+
+function dateTimeInputLabel(value: string, placeholder: string) {
+  if (!value) return placeholder;
+  const [date, rawTime] = value.split("T");
+  return `${date} ${rawTime?.slice(0, 5) ?? "00:00"}`;
+}
 type Tab = "home" | "products" | "orders" | "cart" | "more";
 type Page =
   | Tab
@@ -1971,17 +2011,13 @@ function CartPage({
               onPress={() => setDeliveryDateVisible(false)}
             />
             <Text style={styles.modalTitle}>📅 배송 희망일 선택</Text>
-            <Field
-              label="날짜"
-              value={desiredDate}
-              onChangeText={setDesiredDate}
-              placeholder="YYYY-MM-DD"
-            />
-            <Field
-              label="시간"
-              value={desiredTime}
-              onChangeText={setDesiredTime}
-              placeholder="HH:MM"
+            <DateTimeOptionPicker
+              date={desiredDate}
+              time={desiredTime}
+              onDateChange={setDesiredDate}
+              onTimeChange={setDesiredTime}
+              startOffset={0}
+              dayCount={21}
             />
             <Pressable
               style={styles.primaryButton}
@@ -2089,6 +2125,24 @@ function OrdersPage({
   onOpen: (order: Order) => void;
   onBulk: () => void;
 }) {
+  const [periodPickerVisible, setPeriodPickerVisible] = useState(false);
+  const [periodPickerTarget, setPeriodPickerTarget] = useState<"from" | "to">("from");
+  const [periodDate, setPeriodDate] = useState("");
+  const [periodTime, setPeriodTime] = useState("00:00");
+  const openPeriodPicker = (target: "from" | "to") => {
+    const selected = target === "from" ? from : to;
+    const [selectedDate, selectedTime] = selected.split("T");
+    setPeriodPickerTarget(target);
+    setPeriodDate(selectedDate || dateAtOffset(target === "from" ? -30 : 0));
+    setPeriodTime(selectedTime?.slice(0, 5) || (target === "from" ? "00:00" : "23:59"));
+    setPeriodPickerVisible(true);
+  };
+  const savePeriodPicker = () => {
+    const value = `${periodDate}T${periodTime}:00`;
+    if (periodPickerTarget === "from") onFrom(value);
+    else onTo(value);
+    setPeriodPickerVisible(false);
+  };
   return (
     <View style={styles.page}>
       <PageHeader
@@ -2101,21 +2155,25 @@ function OrdersPage({
           <Text style={styles.strong}>기간별 주문 조회</Text>
         </View>
         <View style={styles.dateRow}>
-          <TextInput
-            value={from}
-            onChangeText={onFrom}
-            placeholder="시작일 YYYY-MM-DD"
-            placeholderTextColor="#98A2B3"
-            style={styles.dateInput}
-          />
+          <Pressable
+            style={styles.periodDateInput}
+            onPress={() => openPeriodPicker("from")}
+          >
+            {icon("calendar-outline", palette.teal, 16)}
+            <Text style={[styles.periodDateText, !from && styles.periodDatePlaceholder]}>
+              {dateTimeInputLabel(from, "시작일·시간")}
+            </Text>
+          </Pressable>
           <Text style={styles.muted}>~</Text>
-          <TextInput
-            value={to}
-            onChangeText={onTo}
-            placeholder="종료일 YYYY-MM-DD"
-            placeholderTextColor="#98A2B3"
-            style={styles.dateInput}
-          />
+          <Pressable
+            style={styles.periodDateInput}
+            onPress={() => openPeriodPicker("to")}
+          >
+            {icon("calendar-outline", palette.teal, 16)}
+            <Text style={[styles.periodDateText, !to && styles.periodDatePlaceholder]}>
+              {dateTimeInputLabel(to, "종료일·시간")}
+            </Text>
+          </Pressable>
         </View>
       </View>
       <ScrollView
@@ -2176,6 +2234,47 @@ function OrdersPage({
           />
         )}
       />
+      <Modal
+        visible={periodPickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPeriodPickerVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.confirmModal}>
+            <ModalCloseButton
+              accessibilityLabel="기간 선택 닫기"
+              onPress={() => setPeriodPickerVisible(false)}
+            />
+            <Text style={styles.modalTitle}>
+              {periodPickerTarget === "from" ? "📅 시작일·시간 선택" : "📅 종료일·시간 선택"}
+            </Text>
+            <DateTimeOptionPicker
+              date={periodDate}
+              time={periodTime}
+              onDateChange={setPeriodDate}
+              onTimeChange={setPeriodTime}
+              startOffset={-30}
+              dayCount={61}
+            />
+            <View style={styles.modalActionRow}>
+              <Pressable
+                style={styles.outlineButton}
+                onPress={() => {
+                  if (periodPickerTarget === "from") onFrom("");
+                  else onTo("");
+                  setPeriodPickerVisible(false);
+                }}
+              >
+                <Text style={styles.outlineText}>초기화</Text>
+              </Pressable>
+              <Pressable style={styles.primaryButton} onPress={savePeriodPicker}>
+                <Text style={styles.primaryText}>선택 완료</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -4724,6 +4823,80 @@ function Chip({
     </Pressable>
   );
 }
+function DateTimeOptionPicker({
+  date,
+  time,
+  onDateChange,
+  onTimeChange,
+  startOffset,
+  dayCount,
+}: {
+  date: string;
+  time: string;
+  onDateChange: (value: string) => void;
+  onTimeChange: (value: string) => void;
+  startOffset: number;
+  dayCount: number;
+}) {
+  const dateOptions = useMemo(
+    () => Array.from({ length: dayCount }, (_, index) => dateAtOffset(startOffset + index)),
+    [dayCount, startOffset],
+  );
+  return (
+    <View style={styles.dateTimePicker}>
+      <Text style={styles.fieldLabel}>날짜</Text>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.dateOptionRow}
+      >
+        {dateOptions.map((option) => (
+          <Pressable
+            key={option}
+            accessibilityLabel={`${dateChoiceLabel(option)} 선택`}
+            style={[
+              styles.dateOption,
+              date === option && styles.dateOptionActive,
+            ]}
+            onPress={() => onDateChange(option)}
+          >
+            <Text
+              style={[
+                styles.dateOptionText,
+                date === option && styles.dateOptionTextActive,
+              ]}
+            >
+              {dateChoiceLabel(option)}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+      <Text style={styles.fieldLabel}>시간</Text>
+      <View style={styles.timeOptionGrid}>
+        {timePickerOptions.map((option) => (
+          <Pressable
+            key={option}
+            accessibilityLabel={`${option} 선택`}
+            style={[
+              styles.timeOption,
+              time === option && styles.timeOptionActive,
+            ]}
+            onPress={() => onTimeChange(option)}
+          >
+            <Text
+              style={[
+                styles.timeOptionText,
+                time === option && styles.timeOptionTextActive,
+              ]}
+            >
+              {option}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
 function StatusPill({ value }: { value: ApplicationStatus }) {
   const copy =
     value === "pending" ? "대기" : value === "approved" ? "승인" : "반려";
@@ -5396,6 +5569,49 @@ const styles: any = StyleSheet.create({
     color: palette.ink,
     fontSize: 11,
   },
+  periodDateInput: {
+    flex: 1,
+    minHeight: 40,
+    paddingHorizontal: 9,
+    borderRadius: 9,
+    borderColor: palette.line,
+    borderWidth: 1,
+    backgroundColor: "#FAFCFD",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  periodDateText: { flex: 1, color: palette.ink, fontSize: 11, fontWeight: "700" },
+  periodDatePlaceholder: { color: "#98A2B3", fontWeight: "600" },
+  dateTimePicker: { gap: 8, marginBottom: 16 },
+  dateOptionRow: { gap: 7, paddingRight: 8 },
+  dateOption: {
+    minHeight: 38,
+    paddingHorizontal: 11,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: "#FAFCFD",
+    justifyContent: "center",
+  },
+  dateOptionActive: { backgroundColor: palette.teal, borderColor: palette.teal },
+  dateOptionText: { color: palette.ink, fontSize: 11, fontWeight: "800" },
+  dateOptionTextActive: { color: "#fff" },
+  timeOptionGrid: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  timeOption: {
+    minWidth: 58,
+    minHeight: 34,
+    paddingHorizontal: 9,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: "#FAFCFD",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  timeOptionActive: { backgroundColor: "#E8F7F8", borderColor: palette.teal },
+  timeOptionText: { color: palette.ink, fontSize: 11, fontWeight: "800" },
+  timeOptionTextActive: { color: palette.teal },
   bulkButton: {
     marginHorizontal: 18,
     marginTop: 5,
