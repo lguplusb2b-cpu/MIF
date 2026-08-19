@@ -7,7 +7,8 @@ export async function loadMifData(): Promise<MifData> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (!raw) return emptyMifData;
-    return { ...emptyMifData, ...JSON.parse(raw) } as MifData;
+    const parsed = JSON.parse(raw) as Partial<MifData>;
+    return { ...emptyMifData, ...parsed } as MifData;
   } catch {
     return emptyMifData;
   }

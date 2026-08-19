@@ -20,10 +20,29 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.lguplusb2b.mif",
-      "permissions": ["POST_NOTIFICATIONS"]
+      "versionCode": 1,
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#007C91",
+          "defaultChannel": "mif-orders"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "774443a8-2685-4328-8717-38795f4ed53d"
+      }
+    },
+    "owner": "greencart7"
   }
 }

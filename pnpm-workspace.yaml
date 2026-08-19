@@ -1,6 +1,9 @@
 allowBuilds:
-  esbuild: set this to true or false
-  unrs-resolver: set this to true or false
+  esbuild: true
+  unrs-resolver: true
+overrides:
+  react: 19.2.3
+  react-dom: 19.2.3
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.16'
   - '@expo/config@57.0.8'

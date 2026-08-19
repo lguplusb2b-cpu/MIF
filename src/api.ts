@@ -1,4 +1,4 @@
-import type { Product } from "./domain";
+import type { AppNotification, Product } from "./domain";
 
 export type MifSessionUser = {
   id: string;
@@ -33,4 +33,7 @@ export const mifApi = {
   listProducts: () => request<Product[]>("/api/products"),
   createProduct: (input: Omit<Product, "id" | "createdAt" | "stockStatus">) => request<Product>("/api/products", { method: "POST", body: JSON.stringify(input) }),
   login: (loginId: string, password: string) => request<{ user: MifSessionUser }>("/api/auth/login", { method: "POST", body: JSON.stringify({ loginId, password }) }),
+  listNotifications: (userId: string) => request<AppNotification[]>(`/api/notifications?userId=${encodeURIComponent(userId)}`),
+  markNotificationRead: (id: string) => request<{ success: true }>(`/api/notifications/${id}/read`, { method: "PATCH" }),
+  registerPushToken: (userId: string, token: string, platform: string) => request<{ success: true }>("/api/push-tokens", { method: "POST", body: JSON.stringify({ userId, token, platform }) }),
 };

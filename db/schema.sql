@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS mif_featured_products (
   UNIQUE(category_id, product_id)
 );
 
+CREATE TABLE IF NOT EXISTS mif_bank_accounts (
+  id UUID PRIMARY KEY,
+  bank_name VARCHAR(64) NOT NULL,
+  account_number VARCHAR(128) NOT NULL,
+  account_holder VARCHAR(128) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS mif_addresses (
   id UUID PRIMARY KEY,
   company_id UUID NOT NULL REFERENCES mif_companies(id) ON DELETE CASCADE,
@@ -203,7 +213,27 @@ CREATE TABLE IF NOT EXISTS mif_push_tokens (
   UNIQUE(user_id, token)
 );
 
+CREATE TABLE IF NOT EXISTS mif_in_app_notifications (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES mif_users(id) ON DELETE CASCADE,
+  company_id UUID REFERENCES mif_companies(id) ON DELETE CASCADE,
+  recipient_role VARCHAR(16) CHECK (recipient_role IN ('admin', 'customer', 'all')),
+  title VARCHAR(255) NOT NULL,
+  body TEXT NOT NULL,
+  notification_type VARCHAR(32) NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  delivered_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE mif_in_app_notifications ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES mif_companies(id) ON DELETE CASCADE;
+ALTER TABLE mif_in_app_notifications ADD COLUMN IF NOT EXISTS recipient_role VARCHAR(16);
+ALTER TABLE mif_in_app_notifications ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE mif_in_app_notifications ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS mif_orders_company_created_idx ON mif_orders(company_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS mif_orders_status_idx ON mif_orders(status);
 CREATE INDEX IF NOT EXISTS mif_products_status_idx ON mif_products(status);
 CREATE INDEX IF NOT EXISTS mif_qa_posts_company_created_idx ON mif_qa_posts(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS mif_notifications_user_created_idx ON mif_in_app_notifications(user_id, created_at DESC);
