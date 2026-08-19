@@ -36,6 +36,7 @@ import {
   money,
   nextOrderStatus,
   orderStatusLabel,
+  productStockStatusLabel,
   statusColor,
   statusCounts,
   type Address,
@@ -92,6 +93,23 @@ const palette = {
   warning: "#B54708",
   error: "#B42318",
   purple: "#6941C6",
+};
+const stockStatusPresentation: Record<
+  Product["stockStatus"],
+  { label: string; icon: string; color: string; backgroundColor: string }
+> = {
+  in_stock: {
+    label: productStockStatusLabel.in_stock,
+    icon: "checkmark-circle",
+    color: palette.success,
+    backgroundColor: "#ECFDF3",
+  },
+  out_of_stock: {
+    label: productStockStatusLabel.out_of_stock,
+    icon: "close-circle",
+    color: palette.error,
+    backgroundColor: "#FEF3F2",
+  },
 };
 type Tab = "home" | "products" | "orders" | "cart" | "more";
 type Page =
@@ -3098,6 +3116,7 @@ function ProductRow({
             {product.spec || "규격 미입력"} · {product.unit}
           </Text>
           <View style={styles.badgeRow}>
+            <StockStatusBadge status={product.stockStatus} />
             {product.badges.map((badge) => (
               <Text key={badge} style={styles.marketingBadge}>
                 {badge}
@@ -3133,6 +3152,37 @@ function ProductRow({
           )}
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+function StockStatusBadge({
+  status,
+  compact = false,
+}: {
+  status: Product["stockStatus"];
+  compact?: boolean;
+}) {
+  const presentation = stockStatusPresentation[status];
+  return (
+    <View
+      accessibilityLabel={`상품 ${presentation.label}`}
+      style={[
+        styles.stockStatusBadge,
+        compact && styles.stockStatusBadgeCompact,
+        { backgroundColor: presentation.backgroundColor },
+      ]}
+    >
+      {icon(presentation.icon, presentation.color, compact ? 11 : 13)}
+      <Text
+        style={[
+          styles.stockStatusBadgeText,
+          compact && styles.stockStatusBadgeTextCompact,
+          { color: presentation.color },
+        ]}
+      >
+        {presentation.label}
+      </Text>
     </View>
   );
 }
@@ -3637,7 +3687,7 @@ function ProductSheet({
           <Text style={styles.fieldLabel}>재고 상태</Text>
           <View style={styles.filterRow}>
             <Chip
-              label="판매중"
+              label="재고 있음"
               active={stockStatus === "in_stock"}
               onPress={() => setStockStatus("in_stock")}
             />
@@ -3647,6 +3697,9 @@ function ProductSheet({
               onPress={() => setStockStatus("out_of_stock")}
             />
           </View>
+          <Text style={styles.helper}>
+            선택한 상태는 상품 목록과 상세 화면의 재고 배지에 즉시 표시됩니다.
+          </Text>
           <Text style={styles.fieldLabel}>마케팅 배지</Text>
           <View style={styles.filterRow}>
             {(["BEST", "시즌", "할인", "품절임박"] as ProductBadge[]).map(
@@ -3694,6 +3747,7 @@ function ProductSheet({
           <Text style={styles.muted}>
             {product?.spec} · {product?.unit}
           </Text>
+          {product && <StockStatusBadge status={product.stockStatus} />}
           <Text style={styles.detailPrice}>
             {money(product?.basePrice || 0)}
           </Text>
@@ -3706,7 +3760,12 @@ function ProductSheet({
               : `최소 주문 수량 ${product?.minOrderQty}${product?.unit}`}
           </Text>
           <Primary
-            text="장바구니 담기"
+            text={
+              product?.stockStatus === "out_of_stock"
+                ? "품절 상품"
+                : "장바구니 담기"
+            }
+            disabled={product?.stockStatus === "out_of_stock"}
             onPress={() => {
               if (product) {
                 onAdd(product);
@@ -4522,9 +4581,22 @@ function StatusPill({ value }: { value: ApplicationStatus }) {
     </View>
   );
 }
-function Primary({ text, onPress }: { text: string; onPress: () => void }) {
+function Primary({
+  text,
+  onPress,
+  disabled = false,
+}: {
+  text: string;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <Pressable style={styles.primaryButton} onPress={onPress}>
+    <Pressable
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      style={[styles.primaryButton, disabled && styles.primaryButtonDisabled]}
+      onPress={onPress}
+    >
       <Text style={styles.primaryText}>{text}</Text>
     </Pressable>
   );
@@ -4913,6 +4985,18 @@ const styles: any = StyleSheet.create({
     marginTop: 5,
   },
   badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 },
+  stockStatusBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 99,
+  },
+  stockStatusBadgeCompact: { paddingHorizontal: 5, paddingVertical: 2 },
+  stockStatusBadgeText: { fontSize: 10, fontWeight: "900" },
+  stockStatusBadgeTextCompact: { fontSize: 9 },
   marketingBadge: {
     color: palette.purple,
     backgroundColor: "#F4EBFF",
@@ -5079,6 +5163,7 @@ const styles: any = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  primaryButtonDisabled: { backgroundColor: "#98A2B3" },
   primaryText: { color: "#fff", fontSize: 13, fontWeight: "900" },
   secondaryButton: {
     minHeight: 42,

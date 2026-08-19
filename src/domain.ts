@@ -51,6 +51,11 @@ export type Category = {
   isActive: boolean;
 };
 export type ProductBadge = "BEST" | "시즌" | "할인" | "품절임박";
+export type ProductStockStatus = "in_stock" | "out_of_stock";
+export const productStockStatusLabel: Record<ProductStockStatus, string> = {
+  in_stock: "재고 있음",
+  out_of_stock: "품절",
+};
 
 export type Product = {
   id: string;
@@ -61,7 +66,7 @@ export type Product = {
   unit: string;
   basePrice: number;
   minOrderQty: number;
-  stockStatus: "in_stock" | "out_of_stock";
+  stockStatus: ProductStockStatus;
   description: string;
   imageUri?: string;
   detailImageUris: string[];
