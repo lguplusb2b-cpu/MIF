@@ -1710,25 +1710,29 @@ function ProductsPage({
               </Pressable>
             )}
           </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.chipRow}
-          >
+          <View style={styles.categoryFilterRow}>
             <Chip
               label="전체상품"
               active={category === ALL_PRODUCT_CATEGORY_ID}
               onPress={() => onCategory(ALL_PRODUCT_CATEGORY_ID)}
             />
-            {categories.map((item) => (
-              <Chip
-                key={item.id}
-                label={`${item.icon} ${item.name}`}
-                active={category === item.id || category === item.name}
-                onPress={() => onCategory(item.id)}
-              />
-            ))}
-          </ScrollView>
+            <View style={styles.categoryFilterDivider} />
+            <ScrollView
+              horizontal
+              style={styles.categoryFilterScroll}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.categoryFilterScrollContent}
+            >
+              {categories.map((item) => (
+                <Chip
+                  key={item.id}
+                  label={`${item.icon} ${item.name}`}
+                  active={category === item.id || category === item.name}
+                  onPress={() => onCategory(item.id)}
+                />
+              ))}
+            </ScrollView>
+          </View>
           <View style={styles.filterRow}>
             <Text style={styles.productCount}>
               상품 {products.length}/{totalProductCount}개
@@ -6139,10 +6143,22 @@ const styles: any = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  chipRow: {
+  categoryFilterRow: {
     paddingHorizontal: 18,
     paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  categoryFilterDivider: {
+    width: 1,
+    height: 22,
+    marginHorizontal: 8,
+    backgroundColor: palette.line,
+  },
+  categoryFilterScroll: { flex: 1 },
+  categoryFilterScrollContent: {
     gap: 7,
+    paddingRight: 18,
     alignItems: "center",
   },
   filterRow: {
