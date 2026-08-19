@@ -45,7 +45,6 @@ import {
 } from "./src/category-workflows";
 import { cartStyles } from "./src/cart-styles";
 import {
-  createPreviewMifData,
   deliveryLabel,
   emptyMifData,
   getVisibleNotices,
@@ -84,7 +83,7 @@ import {
   notificationsForOrderStatus,
   visibleNotifications,
 } from "./src/notification-workflows";
-import { presentPreviewPush, requestMifPushPermission } from "./src/push";
+import { presentPreviewPush } from "./src/push";
 import {
   ALL_PRODUCT_CATEGORY_ID,
   filterProductsForListing,
@@ -276,7 +275,6 @@ function MifApp() {
   const [selectedOrder, setSelectedOrder] = useState<Order | undefined>();
   const [selectedQa, setSelectedQa] = useState<QAPost | undefined>();
   const [session, setSession] = useState<SessionUser | null>(null);
-  const [previewRole, setPreviewRole] = useState<UserRole>("customer");
   const [productQuery, setProductQuery] = useState("");
   const [productCategory, setProductCategory] = useState<string>(
     ALL_PRODUCT_CATEGORY_ID,
@@ -288,9 +286,6 @@ function MifApp() {
   const [orderTo, setOrderTo] = useState("");
   const [adminCompanyQuery, setAdminCompanyQuery] = useState("");
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
-  const [pushMessage, setPushMessage] = useState(
-    "푸시 알림은 실제 Android/iOS 앱에서 권한을 허용하면 활성화됩니다.",
-  );
 
   const setPage = (next: Page) => {
     pageRef.current = next;
@@ -319,6 +314,7 @@ function MifApp() {
       return;
     }
     if (sheet) {
+      if (sheet === "login" && !session) return;
       setSheet(null);
       return;
     }
@@ -338,6 +334,7 @@ function MifApp() {
   useEffect(() => {
     loadMifData().then((saved) => {
       setData(saved);
+      setSheet("login");
       setReady(true);
     });
   }, []);
@@ -348,29 +345,7 @@ function MifApp() {
   useEffect(() => {
     setCart((current) => reconcileCartWithProducts(current, data.products));
   }, [data.products]);
-  const loadPreviewScenario = async () => {
-    await persist(createPreviewMifData());
-    setCart([]);
-    setSession(null);
-    setPreviewRole("customer");
-    goHome();
-    Alert.alert(
-      "미리보기 테스트 준비",
-      "운영 데이터와 분리된 테스트 전용 상품·배송지·계좌·공지를 불러왔습니다.",
-    );
-  };
-  const resetPreviewScenario = async () => {
-    await persist(emptyMifData);
-    setCart([]);
-    setSession(null);
-    setPreviewRole("customer");
-    goHome();
-    Alert.alert(
-      "미리보기 초기화",
-      "테스트 전용 데이터를 삭제하고 MIF 빈 데이터 상태로 되돌렸습니다.",
-    );
-  };
-  const role = session?.role ?? previewRole;
+  const role = session?.role ?? "customer";
   const isAdmin = role === "admin";
   const roleNotifications = useMemo(
     () => visibleNotifications(data.notifications, role),
@@ -424,50 +399,6 @@ function MifApp() {
     recipientRole: NotificationAudience = "all",
   ) => {
     await publishNotifications(next, [{ title, body, type, recipientRole }]);
-  };
-  const enablePush = async () => {
-    const result = await requestMifPushPermission();
-    setPushMessage(result.message);
-    if (
-      result.status === "granted" &&
-      result.token &&
-      session &&
-      isMifApiConfigured()
-    ) {
-      try {
-        await mifApi.registerPushToken(session.id, result.token, Platform.OS);
-        setPushMessage(
-          "MIF 기기 토큰이 등록되어 주문·문의·심사 푸시 알림을 받을 수 있습니다.",
-        );
-      } catch (error) {
-        setPushMessage(
-          error instanceof Error
-            ? error.message
-            : "푸시 토큰 등록에 실패했습니다.",
-        );
-      }
-    }
-    Alert.alert(
-      "MIF 알림",
-      result.status === "granted"
-        ? "푸시 알림 권한을 확인했습니다."
-        : result.message,
-    );
-  };
-  const sendPreviewNotification = async () => {
-    await pushNotice(
-      data,
-      isAdmin ? "관리자 테스트 알림" : "거래처 테스트 알림",
-      isAdmin
-        ? "신규 발주·가입 심사·Q&A 문의 알림을 확인하세요."
-        : "주문·Q&A·심사 결과 알림을 확인하세요.",
-      "system",
-      role,
-    );
-    Alert.alert(
-      "MIF 테스트 알림",
-      `${isAdmin ? "관리자" : "거래처"} 알림함에 새 알림을 추가했습니다.`,
-    );
   };
   useEffect(() => {
     if (!session || !isMifApiConfigured()) return;
@@ -644,7 +575,6 @@ function MifApp() {
       await persist({ ...data, previewAccounts });
       if (session?.id === accountId) {
         setSession({ ...session, role: nextRole });
-        setPreviewRole(nextRole);
         if (nextRole !== "admin") goToPage("more");
       }
       Alert.alert(
@@ -746,7 +676,7 @@ function MifApp() {
         role={role}
         unread={roleNotifications.filter((item) => !item.isRead).length}
         onNotifications={() => goToPage("notifications")}
-        onAccount={() => setSheet("login")}
+        onAccount={() => (session ? goToPage("profile") : setSheet("login"))}
         onBack={isTabPage && page !== "home" ? goBack : undefined}
         onClose={isTabPage && page !== "home" ? goBack : undefined}
       />
@@ -847,17 +777,13 @@ function MifApp() {
             data={data}
             role={role}
             session={session}
-            pushMessage={pushMessage}
-            onEnablePush={enablePush}
-            onTestNotification={sendPreviewNotification}
             onPage={goToPage}
             onSheet={setSheet}
-            onRole={setPreviewRole}
-            onLoadPreview={loadPreviewScenario}
-            onResetPreview={resetPreviewScenario}
             onLogout={() => {
               setSession(null);
-              setPreviewRole("customer");
+              setCart([]);
+              goHome();
+              setSheet("login");
             }}
           />
         )}
@@ -871,8 +797,9 @@ function MifApp() {
             onPassword={() => setSheet("password")}
             onLogout={() => {
               setSession(null);
-              setPreviewRole("customer");
-              goToPage("more");
+              setCart([]);
+              goHome();
+              setSheet("login");
             }}
           />
         )}
@@ -1115,15 +1042,12 @@ function MifApp() {
       )}
       <LoginSheet
         visible={sheet === "login"}
-        onClose={() => setSheet(null)}
-        onPreview={(selectedRole) => {
-          setPreviewRole(selectedRole);
-          setSheet(null);
-          Alert.alert(
-            "미리보기 역할 변경",
-            `${selectedRole === "admin" ? "관리자" : "거래처"} 화면으로 전환했습니다.`,
-          );
+        locked={!session}
+        onClose={() => {
+          if (session) setSheet(null);
         }}
+        onSignup={() => setSheet("signup")}
+        onPassword={() => setSheet("password")}
         onLogin={async (loginId, password) => {
           const previewAccount = findPreviewAccount(
             data.previewAccounts,
@@ -1139,7 +1063,6 @@ function MifApp() {
               role: previewAccount.role,
               status: previewAccount.status,
             });
-            setPreviewRole(previewAccount.role);
             setSheet(null);
             return Alert.alert(
               "로그인 완료",
@@ -1149,7 +1072,7 @@ function MifApp() {
           if (!isMifApiConfigured())
             return Alert.alert(
               "로그인",
-              "아이디 또는 비밀번호가 올바르지 않습니다. 미리보기 계정은 테스트 데이터를 불러온 뒤 이용해 주세요.",
+              "아이디 또는 비밀번호가 올바르지 않습니다.",
             );
           try {
             const result = await mifApi.login(loginId, password);
@@ -1162,7 +1085,6 @@ function MifApp() {
               role: user.role,
               status: user.status,
             });
-            setPreviewRole(user.role);
             setSheet(null);
           } catch (error) {
             Alert.alert(
@@ -1174,7 +1096,7 @@ function MifApp() {
       />
       <SignupSheet
         visible={sheet === "signup"}
-        onClose={() => setSheet(null)}
+        onClose={() => setSheet("login")}
         onSubmit={async (input) => {
           const application: SignupApplication = {
             id: makeId("signup"),
@@ -1193,12 +1115,16 @@ function MifApp() {
             "onboarding",
             "admin",
           );
-          setSheet(null);
+          setSheet("login");
+          Alert.alert(
+            "가입 신청 완료",
+            "관리자 승인 후 등록한 아이디와 비밀번호로 로그인할 수 있습니다.",
+          );
         }}
       />
       <PasswordSheet
         visible={sheet === "password"}
-        onClose={() => setSheet(null)}
+        onClose={() => setSheet("login")}
         onSubmit={async (input) => {
           const request: PasswordResetRequest = {
             id: makeId("reset"),
@@ -1217,7 +1143,11 @@ function MifApp() {
             "onboarding",
             "admin",
           );
-          setSheet(null);
+          setSheet("login");
+          Alert.alert(
+            "재설정 요청 접수",
+            "등록 정보를 확인한 뒤 관리자에게 재설정 요청이 전달되었습니다.",
+          );
         }}
       />
       <ProductSheet
@@ -2558,27 +2488,15 @@ function MorePage({
   data,
   role,
   session,
-  pushMessage,
-  onEnablePush,
-  onTestNotification,
   onPage,
   onSheet,
-  onRole,
-  onLoadPreview,
-  onResetPreview,
   onLogout,
 }: {
   data: MifData;
   role: UserRole;
   session: SessionUser | null;
-  pushMessage: string;
-  onEnablePush: () => void;
-  onTestNotification: () => void;
   onPage: (page: Page) => void;
   onSheet: (sheet: Sheet) => void;
-  onRole: (role: UserRole) => void;
-  onLoadPreview: () => void;
-  onResetPreview: () => void;
   onLogout: () => void;
 }) {
   return (
@@ -2593,68 +2511,17 @@ function MorePage({
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.accountTitle}>
-            {session ? session.name : "MIF 앱 미리보기"}
+            {session?.name ?? "MIF 계정"}
           </Text>
           <Text style={styles.accountCopy}>
             {session
               ? `${session.loginId} · ${role === "admin" ? "관리자" : "거래처"}`
-              : "데이터 없이 워크플로를 검증하는 로컬 미리보기"}
+              : "로그인 후 계정과 업무 메뉴를 이용할 수 있습니다."}
           </Text>
         </View>
-        <Pressable onPress={() => onSheet("login")}>
-          {icon("log-in-outline", "#D9EDF0", 21)}
+        <Pressable onPress={() => onPage("profile")}>
+          {icon("person-circle-outline", "#D9EDF0", 21)}
         </Pressable>
-      </View>
-      <View style={styles.previewRole}>
-        <Text style={styles.strong}>미리보기 역할</Text>
-        <View style={styles.filterRow}>
-          <Chip
-            label="거래처"
-            active={role === "customer"}
-            onPress={() => onRole("customer")}
-          />
-          <Chip
-            label="관리자"
-            active={role === "admin"}
-            onPress={() => onRole("admin")}
-          />
-        </View>
-      </View>
-      <View style={styles.previewRole}>
-        <Text style={styles.strong}>Manus 미리보기 테스트</Text>
-        <Text style={styles.menuCopy}>
-          실제 운영 데이터와 분리된 테스트 전용 데이터를 불러와
-          상품·장바구니·주문·관리 흐름을 직접 확인할 수 있습니다.
-        </Text>
-        <View style={styles.actionRow}>
-          <Secondary text="테스트 데이터 불러오기" onPress={onLoadPreview} />
-          <Secondary
-            text="빈 상태로 초기화"
-            tone="error"
-            onPress={onResetPreview}
-          />
-        </View>
-      </View>
-      <View style={styles.previewRole}>
-        <Text style={styles.strong}>실시간 알림 및 푸시</Text>
-        <Text style={styles.menuCopy}>{pushMessage}</Text>
-        <View style={styles.actionRow}>
-          <Secondary text="푸시 알림 권한 확인" onPress={onEnablePush} />
-          <Secondary
-            text="인앱 알림함"
-            onPress={() => onPage("notifications")}
-          />
-        </View>
-        <View style={styles.actionRow}>
-          <Secondary
-            text="현재 역할 테스트 알림"
-            onPress={onTestNotification}
-          />
-        </View>
-        <Text style={styles.helper}>
-          주문 접수는 관리자에게, 주문 상태 변경·Q&A 답변·심사 결과는 거래처에게
-          역할별로 전달됩니다.
-        </Text>
       </View>
       <MenuGroup title="내 계정">
         <MenuRow
@@ -2836,7 +2703,7 @@ function AppInfoPage({ onBack, onClose }: { onBack: () => void; onClose: () => v
         />
       </MenuGroup>
       <Text style={styles.helper}>
-        Manus 미리보기의 테스트 데이터는 실제 운영 데이터와 분리되며 빈 상태로 초기화할 수 있습니다.
+        MIF는 전용 API·DB·파일 저장소를 사용하며 거래처와 주문 데이터는 독립적으로 관리합니다.
       </Text>
     </ScrollView>
   );
@@ -3893,18 +3760,27 @@ function OrderRow({
 function LoginSheet({
   visible,
   onClose,
-  onPreview,
+  locked,
+  onSignup,
+  onPassword,
   onLogin,
 }: {
   visible: boolean;
   onClose: () => void;
-  onPreview: (role: UserRole) => void;
+  locked: boolean;
+  onSignup: () => void;
+  onPassword: () => void;
   onLogin: (loginId: string, password: string) => Promise<void>;
 }) {
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   return (
-    <Sheet visible={visible} title="MIF 로그인" onClose={onClose}>
+    <Sheet
+      visible={visible}
+      title="MIF 로그인"
+      onClose={onClose}
+      showClose={!locked}
+    >
       <Text style={styles.helper}>
         운영 환경에서는 MIF 전용 API의 승인된 계정으로 로그인합니다.
       </Text>
@@ -3923,13 +3799,14 @@ function LoginSheet({
         secureTextEntry
       />
       <Primary text="로그인" onPress={() => onLogin(loginId, password)} />
-      <Text style={styles.formDivider}>또는 앱 워크플로 미리보기</Text>
-      <View style={styles.actionRow}>
-        <Secondary
-          text="거래처 미리보기"
-          onPress={() => onPreview("customer")}
-        />
-        <Secondary text="관리자 미리보기" onPress={() => onPreview("admin")} />
+      <View style={styles.authLinkRow}>
+        <Pressable onPress={onSignup}>
+          <Text style={styles.authLinkText}>회원가입하기</Text>
+        </Pressable>
+        <View style={styles.authLinkDivider} />
+        <Pressable onPress={onPassword}>
+          <Text style={styles.authLinkText}>비밀번호 찾기</Text>
+        </Pressable>
       </View>
     </Sheet>
   );
@@ -5698,11 +5575,13 @@ function Sheet({
   visible,
   title,
   onClose,
+  showClose = true,
   children,
 }: {
   visible: boolean;
   title: string;
   onClose: () => void;
+  showClose?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -5719,13 +5598,17 @@ function Sheet({
           keyboardVerticalOffset={0}
         >
           <View style={styles.sheetHeader}>
-            <Pressable
-              accessibilityLabel={`${title} 닫기`}
-              onPress={onClose}
-              style={styles.iconButton}
-            >
-              {icon("close-outline", palette.navy, 23)}
-            </Pressable>
+            {showClose ? (
+              <Pressable
+                accessibilityLabel={`${title} 닫기`}
+                onPress={onClose}
+                style={styles.iconButton}
+              >
+                {icon("close-outline", palette.navy, 23)}
+              </Pressable>
+            ) : (
+              <View style={{ width: 34 }} />
+            )}
             <Text style={styles.sheetTitle}>{title}</Text>
             <View style={{ width: 34 }} />
           </View>
@@ -6776,6 +6659,23 @@ const styles: any = StyleSheet.create({
     fontSize: 11,
     textAlign: "center",
     marginVertical: 15,
+  },
+  authLinkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    marginTop: 18,
+  },
+  authLinkText: {
+    color: palette.teal,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  authLinkDivider: {
+    width: 1,
+    height: 13,
+    backgroundColor: palette.line,
   },
   detailImage: {
     height: 180,

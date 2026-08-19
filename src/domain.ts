@@ -241,10 +241,30 @@ export type MifData = {
   notices: Notice[];
   qaPosts: QAPost[];
   notifications: AppNotification[];
-  /** Manus 미리보기 전용 계정이며 운영 API·DB 사용자와 분리된다. */
+  /** 로컬 인증 계정이며 운영 API·DB 사용자와 분리된다. */
   previewAccounts: PreviewAccount[];
   passwordResetRequests: PasswordResetRequest[];
 };
+
+export const MIF_TEST_ACCOUNTS: PreviewAccount[] = [
+  {
+    id: "mif-test-customer",
+    loginId: "mif",
+    password: "mif",
+    name: "MIF 거래처 테스트",
+    companyName: "MIF 거래처",
+    role: "customer",
+    status: "active",
+  },
+  {
+    id: "mif-test-admin",
+    loginId: "admin",
+    password: "admin1234",
+    name: "MIF 관리자 테스트",
+    role: "admin",
+    status: "active",
+  },
+];
 
 export const emptyMifData: MifData = {
   categories: [],
@@ -258,7 +278,7 @@ export const emptyMifData: MifData = {
   notices: [],
   qaPosts: [],
   notifications: [],
-  previewAccounts: [],
+  previewAccounts: MIF_TEST_ACCOUNTS,
   passwordResetRequests: [],
 };
 
@@ -427,47 +447,6 @@ export function createPreviewMifData(): MifData {
       createdAt: now,
     },
   ];
-  const notifications: AppNotification[] = [
-    {
-      id: "preview-notification-customer",
-      title: "거래처 테스트 알림",
-      body: "주문·배송·Q&A 답변 알림을 이 알림함에서 확인합니다.",
-      type: "system",
-      recipientRole: "customer",
-      isRead: false,
-      createdAt: now,
-      data: { event: "preview-customer" },
-    },
-    {
-      id: "preview-notification-admin",
-      title: "관리자 테스트 알림",
-      body: "신규 발주·가입 신청·Q&A 문의 알림을 이 알림함에서 확인합니다.",
-      type: "system",
-      recipientRole: "admin",
-      isRead: false,
-      createdAt: now,
-      data: { event: "preview-admin" },
-    },
-  ];
-  const previewAccounts: PreviewAccount[] = [
-    {
-      id: "preview-admin",
-      loginId: "mif-admin",
-      password: "MifAdmin!2026",
-      name: "MIF 관리자",
-      role: "admin",
-      status: "active",
-    },
-    {
-      id: "preview-customer",
-      loginId: "mif-customer",
-      password: "MifCustomer!2026",
-      name: "MIF 거래처",
-      companyName: "MIF 미리보기 거래처",
-      role: "customer",
-      status: "active",
-    },
-  ];
   const signupApplications: SignupApplication[] = [
     {
       id: "preview-signup-application",
@@ -492,8 +471,7 @@ export function createPreviewMifData(): MifData {
     addresses,
     banks,
     notices,
-    notifications,
-    previewAccounts,
+    previewAccounts: MIF_TEST_ACCOUNTS,
     signupApplications,
   };
 }

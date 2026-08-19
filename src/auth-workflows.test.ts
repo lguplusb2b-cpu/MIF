@@ -4,7 +4,7 @@ import {
   findPreviewAccount,
   getSignupCredentialError,
 } from "./auth-workflows";
-import type { SignupApplication } from "./domain";
+import { MIF_TEST_ACCOUNTS, type SignupApplication } from "./domain";
 
 const application: SignupApplication = {
   id: "signup-test",
@@ -41,8 +41,16 @@ describe("MIF 인증·가입 승인 워크플로", () => {
     expect(
       findPreviewAccount([account!], "test-user", "wrong"),
     ).toBeUndefined();
+    expect(accountFromApprovedApplication({ ...application, status: "pending" })).toBeNull();
+  });
+
+  it("요청된 거래처·관리자 테스트 계정으로 로그인한다", () => {
+    expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "mif", "mif")?.role).toBe(
+      "customer",
+    );
     expect(
-      accountFromApprovedApplication({ ...application, status: "pending" }),
-    ).toBeNull();
+      findPreviewAccount(MIF_TEST_ACCOUNTS, "admin", "admin1234")?.role,
+    ).toBe("admin");
+    expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "admin", "wrong")).toBeUndefined();
   });
 });

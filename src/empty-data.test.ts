@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyMifData } from "./domain";
+import { MIF_TEST_ACCOUNTS, emptyMifData } from "./domain";
 
 describe("MIF 초기 운영 데이터", () => {
   it("거래처·상품·주문·문서·공지·문의·알림을 빈 상태로 시작한다", () => {
@@ -14,6 +14,14 @@ describe("MIF 초기 운영 데이터", () => {
     expect(emptyMifData.notices).toHaveLength(0);
     expect(emptyMifData.qaPosts).toHaveLength(0);
     expect(emptyMifData.notifications).toHaveLength(0);
+  });
+
+  it("운영 데이터와 분리된 거래처·관리자 테스트 계정을 제공한다", () => {
+    expect(emptyMifData.previewAccounts).toEqual(MIF_TEST_ACCOUNTS);
+    expect(MIF_TEST_ACCOUNTS.map((account) => account.loginId)).toEqual([
+      "mif",
+      "admin",
+    ]);
   });
 
   it("미리보기 가입 심사 데이터는 운영 초기 데이터와 분리한다", async () => {
