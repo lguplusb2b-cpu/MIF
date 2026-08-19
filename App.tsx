@@ -9,6 +9,7 @@ import {
   Alert,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -29,6 +30,11 @@ import {
   getSignupCredentialError,
 } from "./src/auth-workflows";
 import { changePreviewAccountRole, roleLabel } from "./src/role-workflows";
+import {
+  removeAddress,
+  saveAddress,
+  setDefaultAddress,
+} from "./src/address-workflows";
 import {
   moveCategory,
   orderedProductCategories,
@@ -810,6 +816,10 @@ function MifApp() {
             addresses={data.addresses}
             onBack={() => setPage("more")}
             onClose={closeToHome}
+            onAdd={() => {
+              setEditingAddress(undefined);
+              setSheet("address");
+            }}
             onEdit={(address) => {
               setEditingAddress(address);
               setSheet("address");
@@ -817,9 +827,13 @@ function MifApp() {
             onDelete={async (id) =>
               await persist({
                 ...data,
-                addresses: data.addresses.filter(
-                  (address) => address.id !== id,
-                ),
+                addresses: removeAddress(data.addresses, id),
+              })
+            }
+            onSetDefault={async (id) =>
+              await persist({
+                ...data,
+                addresses: setDefaultAddress(data.addresses, id),
               })
             }
           />
@@ -1162,16 +1176,10 @@ function MifApp() {
         address={editingAddress}
         onClose={() => setSheet(null)}
         onSave={async (address) => {
-          const normalized = {
-            ...address,
-            isDefault: address.isDefault || !data.addresses.length,
-          };
-          const addresses = data.addresses
-            .filter((item) => item.id !== normalized.id)
-            .map((item) =>
-              normalized.isDefault ? { ...item, isDefault: false } : item,
-            );
-          await persist({ ...data, addresses: [...addresses, normalized] });
+          await persist({
+            ...data,
+            addresses: saveAddress(data.addresses, address),
+          });
           setSheet(null);
         }}
       />
@@ -2890,18 +2898,27 @@ function AddressesPage({
   addresses,
   onBack,
   onClose,
+  onAdd,
   onEdit,
   onDelete,
+  onSetDefault,
 }: {
   addresses: Address[];
   onBack: () => void;
   onClose: () => void;
+  onAdd: () => void;
   onEdit: (address: Address) => void;
   onDelete: (id: string) => void;
+  onSetDefault: (id: string) => void;
 }) {
   return (
     <View style={styles.page}>
-      <BackHeader title="배송지 관리" onBack={onBack} onClose={onClose} />
+      <BackHeader
+        title="배송지 관리"
+        onBack={onBack}
+        onClose={onClose}
+        action={{ icon: "add", onPress: onAdd }}
+      />
       <FlatList
         data={addresses}
         keyExtractor={(item) => item.id}
@@ -2910,7 +2927,7 @@ function AddressesPage({
           <InlineEmpty
             icon="location-outline"
             title="등록된 배송지가 없습니다"
-            copy="장바구니에서 배송지를 등록하세요."
+            copy="오른쪽 상단 + 버튼으로 첫 배송지를 등록하세요."
           />
         }
         renderItem={({ item }) => (
@@ -2936,6 +2953,16 @@ function AddressesPage({
               {item.postalCode ? `(${item.postalCode}) ` : ""}
               {item.address} {item.addressDetail}
             </Text>
+            {!item.isDefault && (
+              <Pressable
+                accessibilityLabel={`${item.label} 기본 배송지로 설정`}
+                style={styles.setDefaultAddressButton}
+                onPress={() => onSetDefault(item.id)}
+              >
+                {icon("location-outline", palette.teal, 15)}
+                <Text style={styles.setDefaultAddressText}>기본 배송지로 설정</Text>
+              </Pressable>
+            )}
           </View>
         )}
       />
@@ -4282,6 +4309,7 @@ function AddressSheet({
   const [jibun, setJibun] = useState(address?.jibunAddress ?? "");
   const [detail, setDetail] = useState(address?.addressDetail ?? "");
   const [isDefault, setIsDefault] = useState(address?.isDefault ?? true);
+  const [addressPickerVisible, setAddressPickerVisible] = useState(false);
   useEffect(() => {
     if (visible) {
       setLabel(address?.label ?? "");
@@ -4316,14 +4344,14 @@ function AddressSheet({
     });
   };
   return (
+    <>
     <Sheet
       visible={visible}
       title={address ? "배송지 수정" : "배송지 등록"}
       onClose={onClose}
     >
       <Text style={styles.helper}>
-        운영 환경에서는 Kakao 우편번호 검색을 연결해 도로명·지번 주소를 자동
-        입력합니다.
+        주소 선택 모달에서 우편번호·도로명·지번 주소를 입력하고 적용하세요.
       </Text>
       <Field
         label="배송지명"
@@ -4344,25 +4372,28 @@ function AddressSheet({
         placeholder="010-0000-0000"
         keyboardType="phone-pad"
       />
-      <Field
-        label="우편번호"
-        value={postalCode}
-        onChangeText={setPostalCode}
-        placeholder="5자리 우편번호"
-        keyboardType="numeric"
-      />
-      <Field
-        label="도로명 주소"
-        value={road}
-        onChangeText={setRoad}
-        placeholder="기본 주소"
-      />
-      <Field
-        label="지번 주소 (선택)"
-        value={jibun}
-        onChangeText={setJibun}
-        placeholder="지번 주소"
-      />
+      <View style={styles.field}>
+        <Text style={styles.fieldLabel}>주소</Text>
+        <Pressable
+          accessibilityLabel="주소 선택 모달 열기"
+          style={styles.addressLookupButton}
+          onPress={() => setAddressPickerVisible(true)}
+        >
+          <View style={{ flex: 1 }}>
+            {road ? (
+              <>
+                <Text style={styles.addressLookupValue}>
+                  {postalCode ? `(${postalCode}) ` : ""}{road}
+                </Text>
+                {jibun ? <Text style={styles.addressLookupSub}>지번 {jibun}</Text> : null}
+              </>
+            ) : (
+              <Text style={styles.addressLookupPlaceholder}>주소를 검색·선택하세요</Text>
+            )}
+          </View>
+          {icon("search-outline", palette.teal, 21)}
+        </Pressable>
+      </View>
       <Field
         label="상세 주소"
         value={detail}
@@ -4379,6 +4410,117 @@ function AddressSheet({
       </View>
       <Primary text="저장" onPress={save} />
     </Sheet>
+      <AddressLookupSheet
+        visible={addressPickerVisible}
+        postalCode={postalCode}
+        roadAddress={road}
+        jibunAddress={jibun}
+        onClose={() => setAddressPickerVisible(false)}
+        onApply={(next) => {
+          setPostalCode(next.postalCode);
+          setRoad(next.roadAddress);
+          setJibun(next.jibunAddress);
+          setAddressPickerVisible(false);
+        }}
+      />
+    </>
+  );
+}
+
+function AddressLookupSheet({
+  visible,
+  postalCode,
+  roadAddress,
+  jibunAddress,
+  onClose,
+  onApply,
+}: {
+  visible: boolean;
+  postalCode: string;
+  roadAddress: string;
+  jibunAddress: string;
+  onClose: () => void;
+  onApply: (value: { postalCode: string; roadAddress: string; jibunAddress: string }) => void;
+}) {
+  const [nextPostalCode, setNextPostalCode] = useState(postalCode);
+  const [nextRoadAddress, setNextRoadAddress] = useState(roadAddress);
+  const [nextJibunAddress, setNextJibunAddress] = useState(jibunAddress);
+  useEffect(() => {
+    if (!visible) return;
+    setNextPostalCode(postalCode);
+    setNextRoadAddress(roadAddress);
+    setNextJibunAddress(jibunAddress);
+  }, [visible, postalCode, roadAddress, jibunAddress]);
+  const apply = () => {
+    if (!nextRoadAddress.trim())
+      return Alert.alert("주소 입력", "도로명 주소를 입력해 주세요.");
+    if (nextPostalCode && !/^\d{5}$/.test(nextPostalCode))
+      return Alert.alert("우편번호", "우편번호는 5자리 숫자여야 합니다.");
+    onApply({
+      postalCode: nextPostalCode,
+      roadAddress: nextRoadAddress.trim(),
+      jibunAddress: nextJibunAddress.trim(),
+    });
+  };
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <SafeAreaView style={styles.sheetSafe}>
+        <KeyboardAvoidingView
+          style={styles.sheetKeyboard}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={0}
+        >
+          <View style={styles.sheetHeader}>
+            <Pressable
+              accessibilityLabel="주소 선택 닫기"
+              onPress={onClose}
+              style={styles.iconButton}
+            >
+              {icon("close-outline", palette.navy, 23)}
+            </Pressable>
+            <Text style={styles.sheetTitle}>주소 선택</Text>
+            <View style={{ width: 34 }} />
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.sheetBody}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text style={styles.helper}>
+              우편번호와 도로명 주소를 입력한 뒤 적용하면 배송지 폼으로 돌아갑니다.
+            </Text>
+            <Field
+              label="우편번호"
+              value={nextPostalCode}
+              onChangeText={setNextPostalCode}
+              placeholder="5자리 우편번호"
+              keyboardType="numeric"
+              returnKeyType="next"
+            />
+            <Field
+              label="도로명 주소"
+              value={nextRoadAddress}
+              onChangeText={setNextRoadAddress}
+              placeholder="예: 서울특별시 중구 세종대로 110"
+              returnKeyType="next"
+            />
+            <Field
+              label="지번 주소 (선택)"
+              value={nextJibunAddress}
+              onChangeText={setNextJibunAddress}
+              placeholder="예: 태평로1가 31"
+              returnKeyType="done"
+            />
+            <Primary text="이 주소 적용" onPress={apply} />
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -5381,23 +5523,30 @@ function Sheet({
       onRequestClose={onClose}
     >
       <SafeAreaView style={styles.sheetSafe}>
-        <View style={styles.sheetHeader}>
-          <Pressable
-            accessibilityLabel={`${title} 닫기`}
-            onPress={onClose}
-            style={styles.iconButton}
-          >
-            {icon("close-outline", palette.navy, 23)}
-          </Pressable>
-          <Text style={styles.sheetTitle}>{title}</Text>
-          <View style={{ width: 34 }} />
-        </View>
-        <ScrollView
-          contentContainerStyle={styles.sheetBody}
-          keyboardShouldPersistTaps="handled"
+        <KeyboardAvoidingView
+          style={styles.sheetKeyboard}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={0}
         >
-          {children}
-        </ScrollView>
+          <View style={styles.sheetHeader}>
+            <Pressable
+              accessibilityLabel={`${title} 닫기`}
+              onPress={onClose}
+              style={styles.iconButton}
+            >
+              {icon("close-outline", palette.navy, 23)}
+            </Pressable>
+            <Text style={styles.sheetTitle}>{title}</Text>
+            <View style={{ width: 34 }} />
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.sheetBody}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+          >
+            {children}
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
   );
@@ -6237,6 +6386,18 @@ const styles: any = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 5,
   },
+  setDefaultAddressButton: {
+    marginTop: 10,
+    alignSelf: "flex-start",
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: palette.aqua,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  setDefaultAddressText: { color: palette.teal, fontSize: 11, fontWeight: "900" },
   actionRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 11 },
   unread: { borderColor: palette.teal, backgroundColor: "#F0FDFA" },
   tabs: {
@@ -6250,6 +6411,7 @@ const styles: any = StyleSheet.create({
   tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 3 },
   tabText: { color: palette.muted, fontSize: 9, fontWeight: "900" },
   sheetSafe: { flex: 1, backgroundColor: palette.bg },
+  sheetKeyboard: { flex: 1 },
   sheetHeader: {
     height: 58,
     paddingHorizontal: 18,
@@ -6280,6 +6442,21 @@ const styles: any = StyleSheet.create({
     borderRadius: 11,
     backgroundColor: palette.surface,
   },
+  addressLookupButton: {
+    minHeight: 58,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 11,
+    borderColor: palette.line,
+    borderWidth: 1,
+    backgroundColor: palette.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  addressLookupValue: { color: palette.ink, fontSize: 13, fontWeight: "800" },
+  addressLookupSub: { color: palette.muted, fontSize: 11, marginTop: 3 },
+  addressLookupPlaceholder: { color: "#98A2B3", fontSize: 13 },
   textarea: { minHeight: 100, textAlignVertical: "top", paddingTop: 11 },
   twoFields: { flexDirection: "row", gap: 9 },
   attach: {
