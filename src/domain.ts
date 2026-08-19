@@ -253,7 +253,7 @@ export const MIF_TEST_ACCOUNTS: PreviewAccount[] = [
   {
     id: "mif-test-customer",
     loginId: "mif",
-    passwordHash: "26af1d520f6bca9917be5726903b77fe8d9a86ae845b9dc68063d1c485d552eb",
+    passwordHash: "3a6570a32c9584e657d23d56895acea9b401a0c3885643549b3e73865b9525ed",
     name: "MIF 거래처 테스트",
     companyName: "MIF 거래처",
     role: "customer",

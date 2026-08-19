@@ -36,6 +36,16 @@ import {
 } from "./src/api";
 import { describeSyncState, mergeServerSnapshot } from "./src/sync-workflows";
 import {
+  createToast,
+  dismissToast as dismissToastItem,
+  enqueueToast,
+  expireToasts,
+  toastAccessibilityLabel,
+  type MifToast,
+  type ToastRequest,
+  type ToastTone,
+} from "./src/toast-workflows";
+import {
   accountFromApprovedApplication,
   findPreviewAccount,
   getSignupCredentialError,
@@ -303,11 +313,8 @@ function MifApp() {
   const [orderTo, setOrderTo] = useState("");
   const [adminCompanyQuery, setAdminCompanyQuery] = useState("");
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
-  const [feedback, setFeedback] = useState<{
-    title: string;
-    message: string;
-    tone: "error" | "success";
-  } | null>(null);
+  const [toasts, setToasts] = useState<MifToast[]>([]);
+  const toastSequenceRef = useRef(0);
   const [syncedAt, setSyncedAt] = useState<string | undefined>();
   const [serverOnline, setServerOnline] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -318,17 +325,44 @@ function MifApp() {
     syncedAt,
   });
 
+  const showToast = (request: ToastRequest) => {
+    toastSequenceRef.current += 1;
+    const toast = createToast(request, Date.now(), toastSequenceRef.current);
+    setToasts((current) => enqueueToast(current, toast));
+  };
+
+  const notify = (title: string, message?: string, tone: ToastTone = "info") =>
+    showToast({ title, message, tone });
+
+  const notifySuccess = (title: string, message?: string) =>
+    showToast({ title, message, tone: "success" });
+
+  const notifyError = (title: string, message?: string) =>
+    showToast({ title, message, tone: "error" });
+
+  const notifyWarning = (title: string, message?: string) =>
+    showToast({ title, message, tone: "warning" });
+
+  /** 이전 단일 배너 API 호환용: 기존 호출부를 토스트로 흘려보낸다. */
   const showFeedback = (
     title: string,
     message: string,
     tone: "error" | "success" = "error",
-  ) => setFeedback({ title, message, tone });
+  ) => showToast({ title, message, tone });
+
+  const dismissToast = (id: string) =>
+    setToasts((current) => dismissToastItem(current, id));
 
   useEffect(() => {
-    if (!feedback) return;
-    const timer = setTimeout(() => setFeedback(null), 5000);
-    return () => clearTimeout(timer);
-  }, [feedback]);
+    if (toasts.length === 0) return;
+    const timer = setInterval(() => {
+      setToasts((current) => {
+        const next = expireToasts(current, Date.now());
+        return next.length === current.length ? current : next;
+      });
+    }, 250);
+    return () => clearInterval(timer);
+  }, [toasts.length]);
 
   const setPage = (next: Page) => {
     pageRef.current = next;
@@ -786,12 +820,12 @@ function MifApp() {
         setSession({ ...session, role: nextRole });
         if (nextRole !== "admin") goToPage("more");
       }
-      Alert.alert(
+      notifySuccess(
         "권한 변경 완료",
         `선택한 계정을 ${roleLabel[nextRole]}로 지정했습니다.`,
       );
     } catch (error) {
-      Alert.alert(
+      notifyError(
         "권한 변경 불가",
         error instanceof Error ? error.message : "권한을 변경할 수 없습니다.",
       );
@@ -804,16 +838,24 @@ function MifApp() {
         : [...current, id],
     );
   const shareFavorites = async (products: Product[]) => {
-    if (!products.length)
-      return Alert.alert("찜 공유", "공유할 찜 상품이 없습니다.");
-    await Share.share({
-      title: "MIF 찜한 상품",
-      message: `MIF 찜한 상품\n${products.map((product) => `• ${product.name} (${product.spec})`).join("\n")}`,
-    });
+    if (!products.length) {
+      notifyWarning("찜 공유", "공유할 찜 상품이 없습니다.");
+      return;
+    }
+    try {
+      await Share.share({
+        title: "MIF 찜한 상품",
+        message: `MIF 찜한 상품\n${products.map((product) => `• ${product.name} (${product.spec})`).join("\n")}`,
+      });
+    } catch {
+      notifyError("찜 공유", "공유를 완료하지 못했습니다.");
+    }
   };
   const bulkAdvanceOrders = async () => {
-    if (!selectedOrderIds.length)
-      return Alert.alert("일괄 처리", "처리할 주문을 선택해 주세요.");
+    if (!selectedOrderIds.length) {
+      notifyWarning("일괄 처리", "처리할 주문을 선택해 주세요.");
+      return;
+    }
     const target = data.orders.filter((order) =>
       selectedOrderIds.includes(order.id),
     );
@@ -824,7 +866,7 @@ function MifApp() {
     });
     await persist({ ...data, orders: nextOrders });
     setSelectedOrderIds([]);
-    Alert.alert(
+    notifySuccess(
       "일괄 처리 완료",
       `${target.length}건의 다음 주문 상태를 반영했습니다.`,
     );
@@ -892,27 +934,6 @@ function MifApp() {
         onBack={isTabPage && page !== "home" ? goBack : undefined}
         onClose={isTabPage && page !== "home" ? goBack : undefined}
       />
-      {feedback && (
-        <View
-          style={[
-            styles.feedbackBanner,
-            feedback.tone === "error"
-              ? styles.feedbackBannerError
-              : styles.feedbackBannerSuccess,
-          ]}
-        >
-          <View style={{ flex: 1 }}>
-            <Text style={styles.feedbackTitle}>{feedback.title}</Text>
-            <Text style={styles.feedbackMessage}>{feedback.message}</Text>
-          </View>
-          <Pressable
-            accessibilityLabel="안내 닫기"
-            onPress={() => setFeedback(null)}
-          >
-            {icon("close", palette.surface, 18)}
-          </Pressable>
-        </View>
-      )}
       <View style={[styles.content, !isTabPage && { paddingBottom: insets.bottom }]}> 
         {page === "home" && (
           <HomePage
@@ -984,6 +1005,7 @@ function MifApp() {
               setSheet("address");
             }}
             onContinueShopping={() => goToPage("products")}
+            onNotice={(title, message, tone) => notify(title, message, tone)}
           />
         )}
         {page === "orders" && (
@@ -1346,6 +1368,7 @@ function MifApp() {
           onSelect={goToPage}
         />
       )}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
       <LoginSheet
         visible={sheet === "login"}
         locked={!session}
@@ -1416,6 +1439,7 @@ function MifApp() {
         }}
       />
       <SignupSheet
+        onNotice={notify}
         visible={sheet === "signup"}
         onClose={() => setSheet("login")}
         onSubmit={async (input) => {
@@ -1466,6 +1490,7 @@ function MifApp() {
         }}
       />
       <PasswordSheet
+        onNotice={notify}
         visible={sheet === "password"}
         onClose={() => setSheet("login")}
         onSubmit={async (input) => {
@@ -1608,6 +1633,7 @@ function MifApp() {
         }
       />
       <AddressSheet
+        onNotice={notify}
         visible={sheet === "address"}
         address={editingAddress}
         onClose={() => setSheet(null)}
@@ -1644,6 +1670,7 @@ function MifApp() {
         }}
       />
       <BankSheet
+        onNotice={notify}
         visible={sheet === "bank"}
         bank={editingBankRef.current}
         onClose={() => setSheet(null)}
@@ -1679,6 +1706,7 @@ function MifApp() {
         }}
       />
       <CategorySheet
+        onNotice={notify}
         visible={sheet === "category"}
         category={editingCategory}
         nextSortOrder={
@@ -1708,6 +1736,7 @@ function MifApp() {
         }}
       />
       <NoticeSheet
+        onNotice={notify}
         visible={sheet === "notice"}
         notice={editingNotice}
         onClose={() => setSheet(null)}
@@ -1753,6 +1782,7 @@ function MifApp() {
         onClose={() => setSheet(null)}
       />
       <QaSheet
+        onNotice={notify}
         visible={sheet === "qa"}
         post={selectedQa}
         isAdmin={isAdmin}
@@ -1801,6 +1831,7 @@ function MifApp() {
         }}
       />
       <InquirySheet
+        onNotice={notify}
         visible={sheet === "inquiry"}
         onClose={() => setSheet(null)}
         onSave={async (inquiry) => {
@@ -2377,6 +2408,7 @@ function CartPage({
   onOrder,
   onAddress,
   onContinueShopping,
+  onNotice,
 }: {
   cart: CartItem[];
   isAdmin: boolean;
@@ -2395,6 +2427,7 @@ function CartPage({
   }) => void;
   onAddress: () => void;
   onContinueShopping: () => void;
+  onNotice?: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [addressId, setAddressId] = useState(
     addresses.find((item) => item.isDefault)?.id ?? "",
@@ -2408,6 +2441,8 @@ function CartPage({
   const [note, setNote] = useState("");
   const [courierConfirmVisible, setCourierConfirmVisible] = useState(false);
   const [deliveryDateVisible, setDeliveryDateVisible] = useState(false);
+  const [clearConfirmVisible, setClearConfirmVisible] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<CartItem | null>(null);
   const [checkoutError, setCheckoutError] = useState("");
   const hasUnavailableItems = cart.some(
     (item) => item.stockStatus === "out_of_stock",
@@ -2457,15 +2492,7 @@ function CartPage({
           cart.length
             ? {
                 icon: "trash-outline",
-                onPress: () =>
-                  Alert.alert(
-                    "장바구니 비우기",
-                    "담긴 상품을 모두 삭제할까요?",
-                    [
-                      { text: "취소", style: "cancel" },
-                      { text: "삭제", style: "destructive", onPress: onClear },
-                    ],
-                  ),
+                onPress: () => setClearConfirmVisible(true),
               }
             : undefined
         }
@@ -2598,9 +2625,10 @@ function CartPage({
                   onPress={() =>
                     canChooseDesiredDeliveryAt(method)
                       ? setDeliveryDateVisible(true)
-                      : Alert.alert(
+                      : onNotice?.(
                           "택배 주문",
                           "택배 배송은 배송희망일과 시간을 지정할 수 없습니다.",
+                          "info",
                         )
                   }
                 >
@@ -2693,20 +2721,7 @@ function CartPage({
                   </Pressable>
                   <Pressable
                     accessibilityLabel={`${item.name} 삭제`}
-                    onPress={() =>
-                      Alert.alert(
-                        "상품 삭제",
-                        `${item.name}을(를) 장바구니에서 삭제할까요?`,
-                        [
-                          { text: "취소", style: "cancel" },
-                          {
-                            text: "삭제",
-                            style: "destructive",
-                            onPress: () => onRemove(item.id),
-                          },
-                        ],
-                      )
-                    }
+                    onPress={() => setRemoveTarget(item)}
                     style={{ marginLeft: 5 }}
                   >
                     {icon("close-circle-outline", palette.muted, 18)}
@@ -2777,9 +2792,10 @@ function CartPage({
                 } else {
                   setCourierConfirmVisible(false);
                   onAddress();
-                  Alert.alert(
+                  onNotice?.(
                     "기본 배송지 없음",
                     "기본 배송지가 없어 새 배송지를 등록해 주세요.",
+                    "warning",
                   );
                 }
               }}
@@ -2829,8 +2845,10 @@ function CartPage({
             <Pressable
               style={styles.primaryButton}
               onPress={() => {
-                if (!desiredDate)
-                  return Alert.alert("배송 희망일", "날짜를 선택해 주세요.");
+                if (!desiredDate) {
+                  onNotice?.("배송 희망일", "날짜를 선택해 주세요.", "warning");
+                  return;
+                }
                 setDeliveryDateVisible(false);
               }}
             >
@@ -2842,7 +2860,75 @@ function CartPage({
           </View>
         </View>
       </Modal>
+      <ConfirmModal
+        visible={clearConfirmVisible}
+        title="장바구니 비우기"
+        message="담긴 상품을 모두 삭제할까요?"
+        confirmLabel="모두 삭제"
+        onCancel={() => setClearConfirmVisible(false)}
+        onConfirm={() => {
+          setClearConfirmVisible(false);
+          onClear();
+        }}
+      />
+      <ConfirmModal
+        visible={Boolean(removeTarget)}
+        title="상품 삭제"
+        message={
+          removeTarget
+            ? `${removeTarget.name}을(를) 장바구니에서 삭제할까요?`
+            : ""
+        }
+        confirmLabel="삭제"
+        onCancel={() => setRemoveTarget(null)}
+        onConfirm={() => {
+          if (removeTarget) onRemove(removeTarget.id);
+          setRemoveTarget(null);
+        }}
+      />
     </View>
+  );
+}
+
+function ConfirmModal({
+  visible,
+  title,
+  message,
+  confirmLabel = "확인",
+  cancelLabel = "취소",
+  onConfirm,
+  onCancel,
+}: {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onCancel}
+    >
+      <View style={styles.confirmOverlay}>
+        <View style={styles.confirmCard}>
+          <Text style={styles.confirmTitle}>{title}</Text>
+          <Text style={styles.confirmCopy}>{message}</Text>
+          <View style={styles.confirmActions}>
+            <Pressable style={styles.confirmCancel} onPress={onCancel}>
+              <Text style={styles.confirmCancelText}>{cancelLabel}</Text>
+            </Pressable>
+            <Pressable style={styles.confirmDelete} onPress={onConfirm}>
+              <Text style={styles.confirmDeleteText}>{confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -4487,12 +4573,14 @@ function SignupSheet({
   visible,
   onClose,
   onSubmit,
+  onNotice,
 }: {
   visible: boolean;
   onClose: () => void;
   onSubmit: (
     input: Omit<SignupApplication, "id" | "status" | "createdAt">,
   ) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [companyName, setCompanyName] = useState("");
   const [businessNumber, setBusinessNumber] = useState("");
@@ -4524,7 +4612,10 @@ function SignupSheet({
       password,
       confirmPassword,
     );
-    if (credentialError) return Alert.alert("입력 확인", credentialError);
+    if (credentialError) {
+      onNotice("입력 확인", credentialError, "warning");
+      return;
+    }
     if (
       ![
         companyName,
@@ -4535,11 +4626,14 @@ function SignupSheet({
         documentName,
       ].every(Boolean) ||
       !agreed
-    )
-      return Alert.alert(
+    ) {
+      onNotice(
         "입력 확인",
         "필수 정보, 사업자등록증, 약관 동의를 확인해 주세요.",
+        "warning",
       );
+      return;
+    }
     onSubmit({
       companyName,
       businessNumber,
@@ -4640,12 +4734,14 @@ function PasswordSheet({
   visible,
   onClose,
   onSubmit,
+  onNotice,
 }: {
   visible: boolean;
   onClose: () => void;
   onSubmit: (
     input: Omit<PasswordResetRequest, "id" | "status" | "createdAt">,
   ) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [loginId, setLoginId] = useState("");
   const [company, setCompany] = useState("");
@@ -4676,8 +4772,10 @@ function PasswordSheet({
       <Primary
         text="재설정 요청"
         onPress={() => {
-          if (![loginId, company, phone].every(Boolean))
-            return Alert.alert("입력 확인", "필수 정보를 입력해 주세요.");
+          if (![loginId, company, phone].every(Boolean)) {
+            onNotice("입력 확인", "필수 정보를 입력해 주세요.", "warning");
+            return;
+          }
           void onSubmit({
             loginId,
             companyName: company,
@@ -5245,11 +5343,13 @@ function AddressSheet({
   address,
   onClose,
   onSave,
+  onNotice,
 }: {
   visible: boolean;
   address?: Address;
   onClose: () => void;
   onSave: (address: Address) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [label, setLabel] = useState(address?.label ?? "");
   const [recipient, setRecipient] = useState(address?.recipient ?? "");
@@ -5275,13 +5375,18 @@ function AddressSheet({
     }
   }, [visible, address]);
   const save = () => {
-    if (![label, recipient, phone, road].every(Boolean))
-      return Alert.alert(
+    if (![label, recipient, phone, road].every(Boolean)) {
+      onNotice(
         "입력 확인",
         "배송지명, 수령인, 연락처, 도로명 주소를 입력해 주세요.",
+        "warning",
       );
-    if (postalCode && !/^\d{5}$/.test(postalCode))
-      return Alert.alert("우편번호", "우편번호는 5자리 숫자여야 합니다.");
+      return;
+    }
+    if (postalCode && !/^\d{5}$/.test(postalCode)) {
+      onNotice("우편번호", "우편번호는 5자리 숫자여야 합니다.", "warning");
+      return;
+    }
     onSave({
       id: address?.id ?? makeId("addr"),
       label,
@@ -5363,6 +5468,7 @@ function AddressSheet({
       <Primary text="저장" onPress={save} />
     </Sheet>
       <AddressLookupSheet
+        onNotice={onNotice}
         visible={addressPickerVisible}
         postalCode={postalCode}
         roadAddress={road}
@@ -5386,6 +5492,7 @@ function AddressLookupSheet({
   jibunAddress,
   onClose,
   onApply,
+  onNotice,
 }: {
   visible: boolean;
   postalCode: string;
@@ -5393,6 +5500,7 @@ function AddressLookupSheet({
   jibunAddress: string;
   onClose: () => void;
   onApply: (value: { postalCode: string; roadAddress: string; jibunAddress: string }) => void;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [nextPostalCode, setNextPostalCode] = useState(postalCode);
   const [nextRoadAddress, setNextRoadAddress] = useState(roadAddress);
@@ -5404,10 +5512,14 @@ function AddressLookupSheet({
     setNextJibunAddress(jibunAddress);
   }, [visible, postalCode, roadAddress, jibunAddress]);
   const apply = () => {
-    if (!nextRoadAddress.trim())
-      return Alert.alert("주소 입력", "도로명 주소를 입력해 주세요.");
-    if (nextPostalCode && !/^\d{5}$/.test(nextPostalCode))
-      return Alert.alert("우편번호", "우편번호는 5자리 숫자여야 합니다.");
+    if (!nextRoadAddress.trim()) {
+      onNotice("주소 입력", "도로명 주소를 입력해 주세요.", "warning");
+      return;
+    }
+    if (nextPostalCode && !/^\d{5}$/.test(nextPostalCode)) {
+      onNotice("우편번호", "우편번호는 5자리 숫자여야 합니다.", "warning");
+      return;
+    }
     onApply({
       postalCode: nextPostalCode,
       roadAddress: nextRoadAddress.trim(),
@@ -5481,11 +5593,13 @@ function BankSheet({
   bank,
   onClose,
   onSave,
+  onNotice,
 }: {
   visible: boolean;
   bank?: BankAccount;
   onClose: () => void;
   onSave: (bank: BankAccount) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [bankName, setBankName] = useState(bank?.bankName ?? "");
   const [accountNumber, setAccountNumber] = useState(bank?.accountNumber ?? "");
@@ -5535,11 +5649,14 @@ function BankSheet({
       <Primary
         text="저장"
         onPress={() => {
-          if (![bankName, accountNumber, holder].every(Boolean))
-            return Alert.alert(
+          if (![bankName, accountNumber, holder].every(Boolean)) {
+            onNotice(
               "입력 확인",
               "은행명, 계좌번호, 예금주를 입력해 주세요.",
+              "warning",
             );
+            return;
+          }
           onSave({
             id: bank?.id ?? makeId("bank"),
             bankName,
@@ -5559,12 +5676,14 @@ function CategorySheet({
   nextSortOrder,
   onClose,
   onSave,
+  onNotice,
 }: {
   visible: boolean;
   category?: Category;
   nextSortOrder: number;
   onClose: () => void;
   onSave: (category: Category) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [name, setName] = useState(category?.name ?? "");
   const [iconValue, setIconValue] = useState(category?.icon ?? "📦");
@@ -5582,8 +5701,10 @@ function CategorySheet({
   }, [visible, category, nextSortOrder]);
 
   const save = async () => {
-    if (!name.trim())
-      return Alert.alert("입력 확인", "카테고리명을 입력해 주세요.");
+    if (!name.trim()) {
+      onNotice("입력 확인", "카테고리명을 입력해 주세요.", "warning");
+      return;
+    }
     await onSave({
       id: category?.id ?? makeId("cat"),
       name,
@@ -5667,11 +5788,13 @@ function NoticeSheet({
   notice,
   onClose,
   onSave,
+  onNotice,
 }: {
   visible: boolean;
   notice?: Notice;
   onClose: () => void;
   onSave: (notice: Notice) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [title, setTitle] = useState(notice?.title ?? "");
   const [content, setContent] = useState(notice?.content ?? "");
@@ -5729,8 +5852,10 @@ function NoticeSheet({
       <Primary
         text="저장"
         onPress={() => {
-          if (![title, content].every(Boolean))
-            return Alert.alert("입력 확인", "제목과 내용을 입력해 주세요.");
+          if (![title, content].every(Boolean)) {
+            onNotice("입력 확인", "제목과 내용을 입력해 주세요.", "warning");
+            return;
+          }
           onSave({
             id: notice?.id ?? makeId("notice"),
             title,
@@ -5753,12 +5878,14 @@ function QaSheet({
   isAdmin,
   onClose,
   onSave,
+  onNotice,
 }: {
   visible: boolean;
   post?: QAPost;
   isAdmin: boolean;
   onClose: () => void;
   onSave: (post: QAPost) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [title, setTitle] = useState(post?.title ?? "");
   const [content, setContent] = useState("");
@@ -5780,11 +5907,14 @@ function QaSheet({
     }
   }, [visible, post]);
   const save = () => {
-    if (!content.trim() || (!isAdmin && !title.trim()))
-      return Alert.alert(
+    if (!content.trim() || (!isAdmin && !title.trim())) {
+      onNotice(
         "입력 확인",
         isAdmin ? "답변을 입력해 주세요." : "제목과 문의 내용을 입력해 주세요.",
+        "warning",
       );
+      return;
+    }
     if (isAdmin && post) {
       onSave({
         ...post,
@@ -5878,10 +6008,12 @@ function InquirySheet({
   visible,
   onClose,
   onSave,
+  onNotice,
 }: {
   visible: boolean;
   onClose: () => void;
   onSave: (inquiry: VendorInquiry) => Promise<void>;
+  onNotice: (title: string, message: string, tone?: ToastTone) => void;
 }) {
   const [companyName, setCompanyName] = useState("");
   const [contactName, setContactName] = useState("");
@@ -5941,11 +6073,14 @@ function InquirySheet({
           if (
             ![companyName, contactName, phone].every(Boolean) ||
             message.trim().length < 10
-          )
-            return Alert.alert(
+          ) {
+            onNotice(
               "입력 확인",
               "필수 정보와 10자 이상의 문의 내용을 입력해 주세요.",
+              "warning",
             );
+            return;
+          }
           onSave({
             id: makeId("inquiry"),
             companyName,
@@ -6626,6 +6761,62 @@ function ModalCloseButton({
     </Pressable>
   );
 }
+const toastPresentation: Record<
+  ToastTone,
+  { accent: string; icon: string }
+> = {
+  success: { accent: "#32D583", icon: "checkmark-circle" },
+  error: { accent: "#FDA29B", icon: "alert-circle" },
+  warning: { accent: "#FDB022", icon: "warning" },
+  info: { accent: "#5BC0CE", icon: "information-circle" },
+};
+
+function ToastStack({
+  toasts,
+  onDismiss,
+}: {
+  toasts: MifToast[];
+  onDismiss: (id: string) => void;
+}) {
+  const insets = useSafeAreaInsets();
+  if (toasts.length === 0) return null;
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[styles.toastStack, { top: insets.top + 58 }]}
+    >
+      {toasts.map((toast) => {
+        const tone = toastPresentation[toast.tone];
+        return (
+          <Pressable
+            key={toast.id}
+            accessibilityRole="alert"
+            accessibilityLabel={toastAccessibilityLabel(toast)}
+            onPress={() => onDismiss(toast.id)}
+            style={[styles.toastCard, { borderLeftColor: tone.accent }]}
+          >
+            {icon(tone.icon, tone.accent, 18)}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toastTitle}>{toast.title}</Text>
+              {toast.message ? (
+                <Text style={styles.toastMessage}>{toast.message}</Text>
+              ) : null}
+            </View>
+            <Pressable
+              accessibilityLabel="알림 닫기"
+              hitSlop={8}
+              onPress={() => onDismiss(toast.id)}
+              style={styles.toastClose}
+            >
+              {icon("close", "#98A2B3", 16)}
+            </Pressable>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 function TabBar({
   active,
   cartCount,
@@ -6726,20 +6917,36 @@ const styles: any = StyleSheet.create({
   },
   app: { flex: 1, backgroundColor: palette.bg },
   content: { flex: 1 },
-  feedbackBanner: {
-    marginHorizontal: 14,
-    marginTop: 10,
+  toastStack: {
+    position: "absolute",
+    left: 10,
+    right: 10,
+    gap: 8,
+    zIndex: 90,
+  },
+  toastCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
     paddingVertical: 11,
     paddingHorizontal: 12,
     borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
+    borderLeftWidth: 4,
+    backgroundColor: palette.ink,
+    shadowColor: "#0B1220",
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
-  feedbackBannerError: { backgroundColor: palette.error },
-  feedbackBannerSuccess: { backgroundColor: palette.success },
-  feedbackTitle: { color: palette.surface, fontSize: 13, fontWeight: "800" },
-  feedbackMessage: { color: palette.surface, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  toastTitle: { color: palette.surface, fontSize: 13, fontWeight: "800" },
+  toastMessage: {
+    color: "#E4E7EC",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  toastClose: { paddingLeft: 2, paddingTop: 1 },
   loading: {
     flex: 1,
     alignItems: "center",

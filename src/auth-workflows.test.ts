@@ -46,12 +46,13 @@ describe("MIF 인증·가입 승인 워크플로", () => {
   });
 
   it("요청된 거래처·관리자 테스트 계정의 해시 비밀번호를 검증한다", () => {
-    expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "mif", "mif")?.role).toBe(
+    expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "mif", "@mif")?.role).toBe(
       "customer",
     );
     expect(
       findPreviewAccount(MIF_TEST_ACCOUNTS, "admin", "admin1234")?.role,
     ).toBe("admin");
     expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "admin", "wrong")).toBeUndefined();
+    expect(findPreviewAccount(MIF_TEST_ACCOUNTS, "mif", "mif")).toBeUndefined();
   });
 });
