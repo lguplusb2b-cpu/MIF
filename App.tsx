@@ -48,7 +48,7 @@ import {
   createPreviewMifData,
   deliveryLabel,
   emptyMifData,
-  isVisibleNotice,
+  getVisibleNotices,
   makeId,
   money,
   nextOrderStatus,
@@ -222,6 +222,7 @@ type Sheet =
   | "address"
   | "bank"
   | "notice"
+  | "noticeDetail"
   | "qa"
   | "inquiry"
   | "order"
@@ -261,6 +262,7 @@ function MifApp() {
   const [editingProduct, setEditingProduct] = useState<Product | undefined>();
   const [editingAddress, setEditingAddress] = useState<Address | undefined>();
   const [editingNotice, setEditingNotice] = useState<Notice | undefined>();
+  const [selectedNotice, setSelectedNotice] = useState<Notice | undefined>();
   const [editingCategory, setEditingCategory] = useState<Category | undefined>();
   const [selectedOrder, setSelectedOrder] = useState<Order | undefined>();
   const [selectedQa, setSelectedQa] = useState<QAPost | undefined>();
@@ -366,10 +368,7 @@ function MifApp() {
     [data.notifications, role],
   );
   const cartTotal = useMemo(() => orderTotal(cart), [cart]);
-  const visibleNotices = useMemo(
-    () => data.notices.filter((notice) => isVisibleNotice(notice)),
-    [data.notices],
-  );
+  const visibleNotices = useMemo(() => getVisibleNotices(data.notices), [data.notices]);
   const productCategories = useMemo(
     () => orderedProductCategories(data.categories),
     [data.categories],
@@ -757,6 +756,7 @@ function MifApp() {
         {page === "home" && (
           <HomePage
             data={data}
+            notices={visibleNotices}
             isAdmin={isAdmin}
             cartCount={cart.length}
             onPage={goToPage}
@@ -765,6 +765,10 @@ function MifApp() {
               setSheet("product");
             }}
             onAdd={addProductToCart}
+            onOpenNotice={(notice) => {
+              setSelectedNotice(notice);
+              setSheet("noticeDetail");
+            }}
           />
         )}
         {page === "products" && (
@@ -939,6 +943,10 @@ function MifApp() {
             onCreate={() => {
               setEditingNotice(undefined);
               setSheet("notice");
+            }}
+            onOpen={(notice) => {
+              setSelectedNotice(notice);
+              setSheet("noticeDetail");
             }}
             onDelete={async (id) =>
               await persist({
@@ -1297,6 +1305,11 @@ function MifApp() {
           setSheet(null);
         }}
       />
+      <NoticeDetailSheet
+        visible={sheet === "noticeDetail"}
+        notice={selectedNotice}
+        onClose={() => setSheet(null)}
+      />
       <QaSheet
         visible={sheet === "qa"}
         post={selectedQa}
@@ -1462,18 +1475,22 @@ function AppBar({
 
 function HomePage({
   data,
+  notices,
   isAdmin,
   cartCount,
   onPage,
   onProduct,
   onAdd,
+  onOpenNotice,
 }: {
   data: MifData;
+  notices: Notice[];
   isAdmin: boolean;
   cartCount: number;
   onPage: (page: Page) => void;
   onProduct: (product: Product) => void;
   onAdd: (product: Product) => void;
+  onOpenNotice: (notice: Notice) => void;
 }) {
   const counts = statusCounts(data.orders);
   const featured = [...data.products]
@@ -1565,21 +1582,24 @@ function HomePage({
           <Text style={styles.link}>전체 보기</Text>
         </Pressable>
       </View>
-      {data.notices
-        .filter((notice) => isVisibleNotice(notice))
-        .slice(0, 3)
+      {notices.slice(0, 3)
         .map((notice) => (
-          <View key={notice.id} style={styles.noticeRow}>
+          <Pressable
+            key={notice.id}
+            style={({ pressed }) => [styles.noticeRow, pressed && styles.noticeRowPressed]}
+            onPress={() => onOpenNotice(notice)}
+            accessibilityLabel={`${notice.title} 공지 상세 보기`}
+          >
             {icon("megaphone-outline", palette.teal, 17)}
             <Text style={styles.noticeTitle} numberOfLines={1}>
               {notice.title}
             </Text>
             <Text style={styles.noticeDate}>
-              {notice.createdAt.slice(0, 10)}
+              {notice.startDate ?? notice.createdAt.slice(0, 10)}
             </Text>
-          </View>
+          </Pressable>
         ))}
-      {!data.notices.filter((notice) => isVisibleNotice(notice)).length && (
+      {!notices.length && (
         <InlineEmpty
           icon="notifications-outline"
           title="게시 중인 공지가 없습니다"
@@ -3049,6 +3069,7 @@ function NoticesPage({
   onEdit,
   onCreate,
   onDelete,
+  onOpen,
 }: {
   notices: Notice[];
   isAdmin: boolean;
@@ -3057,6 +3078,7 @@ function NoticesPage({
   onEdit: (notice: Notice) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
+  onOpen: (notice: Notice) => void;
 }) {
   return (
     <View style={styles.page}>
@@ -3084,7 +3106,7 @@ function NoticesPage({
         renderItem={({ item }) => (
           <Pressable
             style={styles.card}
-            onPress={() => isAdmin && onEdit(item)}
+            onPress={() => (isAdmin ? onEdit(item) : onOpen(item))}
           >
             <View style={styles.sectionRow}>
               <Text style={styles.strong}>{item.title}</Text>
@@ -4767,6 +4789,32 @@ function CategorySheet({
   );
 }
 
+function NoticeDetailSheet({
+  visible,
+  notice,
+  onClose,
+}: {
+  visible: boolean;
+  notice?: Notice;
+  onClose: () => void;
+}) {
+  if (!notice) return null;
+  return (
+    <Sheet visible={visible} title="공지사항" onClose={onClose}>
+      <View style={styles.noticeDetailHeader}>
+        <Text style={styles.noticeDetailBadge}>운영 공지</Text>
+        <Text style={styles.noticeDetailDate}>
+          {notice.startDate ?? notice.createdAt.slice(0, 10)}
+          {notice.endDate ? ` ~ ${notice.endDate}` : ""}
+        </Text>
+      </View>
+      <Text style={styles.noticeDetailTitle}>{notice.title}</Text>
+      <View style={styles.noticeDetailDivider} />
+      <Text style={styles.noticeDetailContent}>{notice.content}</Text>
+    </Sheet>
+  );
+}
+
 function NoticeSheet({
   visible,
   notice,
@@ -5982,8 +6030,15 @@ const styles: any = StyleSheet.create({
     borderBottomColor: palette.line,
     borderBottomWidth: 1,
   },
+  noticeRowPressed: { opacity: 0.62 },
   noticeTitle: { color: palette.ink, fontSize: 13, fontWeight: "700", flex: 1 },
   noticeDate: { color: palette.muted, fontSize: 11, marginTop: 4 },
+  noticeDetailHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  noticeDetailBadge: { color: palette.teal, backgroundColor: palette.aqua, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 99, fontSize: 11, fontWeight: "900" },
+  noticeDetailDate: { color: palette.muted, fontSize: 12, fontWeight: "700", flex: 1, textAlign: "right" },
+  noticeDetailTitle: { color: palette.navy, fontSize: 21, fontWeight: "900", lineHeight: 29, marginTop: 15 },
+  noticeDetailDivider: { height: 1, backgroundColor: palette.line, marginVertical: 16 },
+  noticeDetailContent: { color: palette.ink, fontSize: 15, lineHeight: 24 },
   page: { flex: 1 },
   pageHeader: {
     paddingHorizontal: 18,

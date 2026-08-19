@@ -283,12 +283,36 @@ export function statusCounts(orders: Order[]) {
 }
 
 export function isVisibleNotice(notice: Notice, now = new Date()) {
-  const today = now.toISOString().slice(0, 10);
+  const today = koreanDateKey(now);
   return (
     notice.isVisible &&
     (!notice.startDate || notice.startDate <= today) &&
     (!notice.endDate || notice.endDate >= today)
   );
+}
+
+/** 날짜만 저장하는 공지의 노출 기준을 한국 운영일 기준으로 통일한다. */
+export function koreanDateKey(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+/** 홈·거래처 공지 목록에서 사용할 활성 공지의 기간 필터와 최신순 정렬 규칙이다. */
+export function getVisibleNotices(notices: Notice[], now = new Date()) {
+  return notices
+    .filter((notice) => isVisibleNotice(notice, now))
+    .sort((left, right) => {
+      const leftDate = left.updatedAt ?? left.createdAt;
+      const rightDate = right.updatedAt ?? right.createdAt;
+      return rightDate.localeCompare(leftDate);
+    });
 }
 
 /**
