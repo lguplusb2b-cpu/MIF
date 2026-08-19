@@ -87,6 +87,14 @@ import {
 import { presentPreviewPush, requestMifPushPermission } from "./src/push";
 import { getProductSaveError, saveProduct } from "./src/product-workflows";
 import {
+  deliveryMethodPresentation,
+  formatDesiredDelivery,
+  formatOrderAddress,
+  formatOrderDate,
+  formatOrderRecipient,
+  orderShippingInfoLines,
+} from "./src/order-presentation";
+import {
   getPreviousPage,
   recordPageTransition,
 } from "./src/navigation-workflows";
@@ -518,7 +526,12 @@ function MifApp() {
         desiredDeliveryAt: input.desiredDeliveryAt,
         bankAccountId: input.bankAccountId,
         note: input.note,
-        companyName: session?.companyName,
+        companyName:
+          session?.companyName ||
+          data.previewAccounts.find(
+            (account) => account.role === "customer" && account.status === "active",
+          )?.companyName ||
+          "MIF 거래처",
       });
       const next = { ...data, orders: [order, ...data.orders] };
       setCart([]);
@@ -3724,6 +3737,7 @@ function OrderRow({
   onSelect: () => void;
   onOpen: () => void;
 }) {
+  const shippingInfo = orderShippingInfoLines(order);
   return (
     <Pressable
       style={[styles.orderCard, isLatest && styles.latest]}
@@ -3758,20 +3772,31 @@ function OrderRow({
         </View>
       </View>
       {isLatest && <Text style={styles.latestText}>가장 최근 주문</Text>}
-      <Text style={styles.noticeDate}>
-        {order.createdAt.slice(0, 10)} · {deliveryLabel[order.deliveryMethod]}
-      </Text>
+      {isAdmin && order.companyName && <Text style={styles.orderCardCompany}>거래처 · {order.companyName}</Text>}
+      <Text style={styles.orderDate}>{formatOrderDate(order.createdAt)}</Text>
+      <View style={styles.orderDeliveryPanel}>
+        <View style={styles.orderDeliveryLine}>
+          <View style={styles.deliveryInfoIcon}>{icon("cube-outline", "#1D4ED8", 16)}</View>
+          <View style={styles.orderDeliveryCopy}>
+            <Text style={styles.orderDeliveryLabel}>배송 방법</Text>
+            <Text style={styles.orderDeliveryValue}>{deliveryMethodPresentation(order.deliveryMethod)}</Text>
+          </View>
+        </View>
+        <View style={styles.orderDeliveryLine}>
+          <View style={[styles.deliveryInfoIcon, styles.deliveryAddressIcon]}>{icon("location-outline", palette.success, 16)}</View>
+          <View style={styles.orderDeliveryCopy}>
+            <Text style={styles.orderDeliveryLabel}>배송지</Text>
+            <Text style={styles.orderDeliveryAddress} numberOfLines={2}>{formatOrderAddress(order)}</Text>
+          </View>
+        </View>
+      </View>
       <Text style={styles.orderItems} numberOfLines={1}>
         {order.items.map((item) => item.name).join(", ")}
       </Text>
       {order.desiredDeliveryAt && (
-        <Text style={styles.muted}>희망 배송일 {order.desiredDeliveryAt}</Text>
+        <Text style={styles.orderDesiredDelivery}>📅 희망 배송일 {formatDesiredDelivery(order.desiredDeliveryAt)}</Text>
       )}
-      {order.trackingNumber && (
-        <Text style={[styles.muted, { color: palette.teal }]}>
-          송장 {order.courierCompany || "택배"} · {order.trackingNumber}
-        </Text>
-      )}
+      {shippingInfo.map((line) => <Text key={line} style={styles.orderShippingInfo}>🚚 {line}</Text>)}
       <Text style={styles.orderAmount}>{money(order.totalAmount)}</Text>
     </Pressable>
   );
@@ -5069,70 +5094,63 @@ function OrderSheet({
   if (!order) return null;
   const bank = banks.find((item) => item.id === order.paymentBankAccountId);
   const next = nextOrderStatus(order.status);
+  const shippingInfo = orderShippingInfoLines(order);
   return (
     <Sheet visible={visible} title="주문 상세" onClose={onClose}>
       <View style={styles.detailOrder}>
-        <View style={styles.sectionRow}>
-          <Text style={styles.detailTitle}>{order.orderNumber}</Text>
-          <View
-            style={[
-              styles.statusPill,
-              { backgroundColor: `${statusColor[order.status]}18` },
-            ]}
-          >
-            <Text
-              style={[styles.statusText, { color: statusColor[order.status] }]}
-            >
-              {orderStatusLabel[order.status]}
-            </Text>
+        <View style={styles.orderDetailHero}>
+          <View style={styles.sectionRow}>
+            <View>
+              <Text style={styles.detailTitle}>{order.orderNumber}</Text>
+              <Text style={styles.orderDetailDate}>{formatOrderDate(order.createdAt, true)}</Text>
+            </View>
+            <View style={[styles.statusPill, { backgroundColor: `${statusColor[order.status]}18` }]}>
+              <Text style={[styles.statusText, { color: statusColor[order.status] }]}>{orderStatusLabel[order.status]}</Text>
+            </View>
           </View>
+          {isAdmin && order.companyName && <Text style={styles.orderDetailCompany}>거래처 · {order.companyName}</Text>}
         </View>
-        <Text style={styles.noticeDate}>
-          {order.createdAt.slice(0, 16).replace("T", " ")}
-        </Text>
-        <Text style={styles.panelTitle}>주문 품목</Text>
-        {order.items.map((item) => (
-          <View key={item.id} style={styles.lineRow}>
-            <Text style={styles.muted}>
-              {item.name} · {item.quantity}
-              {item.unit}
-            </Text>
-            <Text style={styles.strong}>
-              {money(item.basePrice * item.quantity)}
-            </Text>
+        <View style={styles.orderDetailSection}>
+          <Text style={styles.orderDetailSectionTitle}>주문 상품</Text>
+          {order.items.map((item) => (
+            <View key={item.id} style={styles.lineRow}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text style={styles.strong}>{item.name}</Text>
+                <Text style={styles.muted}>{item.spec} · {item.quantity}{item.unit}</Text>
+              </View>
+              <Text style={styles.strong}>{money(item.basePrice * item.quantity)}</Text>
+            </View>
+          ))}
+        </View>
+        <View style={[styles.orderDetailSection, styles.orderDetailDeliverySection]}>
+          <Text style={styles.orderDetailSectionTitle}>배송 정보</Text>
+          <View style={styles.orderDetailDeliveryHead}>
+            {icon("cube-outline", "#1D4ED8", 17)}
+            <Text style={styles.orderDetailDeliveryMethod}>{deliveryMethodPresentation(order.deliveryMethod)}</Text>
           </View>
-        ))}
-        <Text style={styles.panelTitle}>배송 정보</Text>
-        <Text style={styles.muted}>
-          {deliveryLabel[order.deliveryMethod]} ·{" "}
-          {order.addressSnapshot?.recipient || order.address?.recipient} ·{" "}
-          {order.addressSnapshot?.phone || order.address?.phone}
-        </Text>
-        <Text style={styles.muted}>
-          {order.addressSnapshot?.address || order.address?.address}{" "}
-          {order.addressSnapshot?.addressDetail || order.address?.addressDetail}
-        </Text>
-        {order.desiredDeliveryAt && (
-          <Text style={styles.muted}>
-            희망 배송일 {order.desiredDeliveryAt}
-          </Text>
-        )}
+          <View style={styles.orderDetailInfoRow}>
+            {icon("location-outline", palette.success, 17)}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.orderDetailInfoLabel}>배송지</Text>
+              <Text style={styles.orderDetailInfoValue}>{formatOrderAddress(order)}</Text>
+              <Text style={styles.orderDetailRecipient}>{formatOrderRecipient(order)}</Text>
+            </View>
+          </View>
+          <View style={styles.orderDetailInfoRow}>
+            {icon("calendar-outline", palette.teal, 17)}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.orderDetailInfoLabel}>희망 배송일</Text>
+              <Text style={styles.orderDetailInfoValue}>{formatDesiredDelivery(order.desiredDeliveryAt)}</Text>
+            </View>
+          </View>
+          {shippingInfo.map((line) => <Text key={line} style={styles.orderDetailShippingInfo}>🚚 {line}</Text>)}
+        </View>
         {order.note && (
           <View style={styles.orderNote}>
             <Text style={styles.orderNoteLabel}>배송 요청사항</Text>
             <Text style={styles.orderNoteText}>{order.note}</Text>
           </View>
         )}
-        {order.deliveryMethod === "courier" &&
-          (order.trackingNumber ? (
-            <Text style={[styles.muted, { color: palette.teal }]}>
-              배송 조회: {order.courierCompany || "택배"} {order.trackingNumber}
-            </Text>
-          ) : (
-            <Text style={styles.helper}>
-              관리자가 택배사·송장을 등록하면 배송 조회를 제공합니다.
-            </Text>
-          ))}
         {order.deliveryMethod === "truck" && order.truckDriverPhone && (
           <Pressable
             onPress={() => Alert.alert("기사 연락처", order.truckDriverPhone!)}
@@ -5142,15 +5160,11 @@ function OrderSheet({
             </Text>
           </Pressable>
         )}
-        <Text style={styles.panelTitle}>결제 정보</Text>
-        <Text style={styles.total}>{money(order.totalAmount)}</Text>
-        {bank ? (
-          <Text style={styles.muted}>
-            {bank.bankName} · {bank.accountNumber} · 예금주 {bank.accountHolder}
-          </Text>
-        ) : (
-          <Text style={styles.helper}>등록된 결제 계좌가 없습니다.</Text>
-        )}
+        <View style={styles.orderDetailSection}>
+          <Text style={styles.orderDetailSectionTitle}>결제 정보</Text>
+          <View style={styles.orderPaymentTotalRow}><Text style={styles.orderPaymentLabel}>주문 금액</Text><Text style={styles.total}>{money(order.totalAmount)}</Text></View>
+          {bank ? <Text style={styles.orderPaymentAccount}>{bank.bankName} · {bank.accountNumber} · 예금주 {bank.accountHolder}</Text> : <Text style={styles.helper}>등록된 결제 계좌가 없습니다.</Text>}
+        </View>
       </View>
       <View style={styles.actionRow}>
         <Secondary compact text="재주문" onPress={() => onReorder(order)} />
@@ -6258,10 +6272,14 @@ const styles: any = StyleSheet.create({
   bulkText: { color: palette.purple, fontSize: 12, fontWeight: "900" },
   orderCard: {
     padding: 14,
-    backgroundColor: palette.surface,
-    borderColor: palette.line,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#DCE5EB",
     borderWidth: 1,
     borderRadius: 15,
+    shadowColor: "#102A43",
+    shadowOpacity: 0.04,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 2 },
   },
   latest: { borderWidth: 2, borderColor: palette.teal },
   latestText: {
@@ -6277,6 +6295,18 @@ const styles: any = StyleSheet.create({
   },
   statusPill: { borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4 },
   statusText: { fontSize: 10, fontWeight: "900" },
+  orderDate: { color: palette.muted, fontSize: 11, fontWeight: "700", marginTop: 6 },
+  orderCardCompany: { color: palette.teal, fontSize: 11, fontWeight: "900", marginTop: 7 },
+  orderDeliveryPanel: { marginTop: 9, gap: 7, padding: 9, borderRadius: 10, backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E5EAF0" },
+  orderDeliveryLine: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  deliveryInfoIcon: { width: 26, height: 26, borderRadius: 8, backgroundColor: "#EFF6FF", alignItems: "center", justifyContent: "center" },
+  deliveryAddressIcon: { backgroundColor: "#F0FDF4" },
+  orderDeliveryCopy: { flex: 1, gap: 1 },
+  orderDeliveryLabel: { color: palette.muted, fontSize: 10, fontWeight: "800" },
+  orderDeliveryValue: { color: "#1D4ED8", fontSize: 12, fontWeight: "900" },
+  orderDeliveryAddress: { color: palette.ink, fontSize: 12, fontWeight: "700", lineHeight: 17 },
+  orderDesiredDelivery: { color: palette.success, fontSize: 11, fontWeight: "800", marginTop: 8 },
+  orderShippingInfo: { color: palette.teal, fontSize: 11, fontWeight: "800", marginTop: 4 },
   orderItems: {
     color: palette.ink,
     fontSize: 13,
@@ -6597,7 +6627,23 @@ const styles: any = StyleSheet.create({
     marginTop: 9,
   },
   adminComment: { backgroundColor: palette.aqua },
-  detailOrder: { gap: 5 },
+  detailOrder: { gap: 12 },
+  orderDetailHero: { backgroundColor: "#F8FAFC", borderColor: "#E5EAF0", borderWidth: 1, borderRadius: 14, padding: 13 },
+  orderDetailDate: { color: palette.muted, fontSize: 12, fontWeight: "700", marginTop: 4 },
+  orderDetailCompany: { color: palette.teal, fontSize: 12, fontWeight: "800", marginTop: 10 },
+  orderDetailSection: { borderColor: "#E5EAF0", borderWidth: 1, borderRadius: 14, padding: 13, backgroundColor: palette.surface },
+  orderDetailSectionTitle: { color: palette.navy, fontSize: 14, fontWeight: "900", marginBottom: 6 },
+  orderDetailDeliverySection: { backgroundColor: "#F8FAFC" },
+  orderDetailDeliveryHead: { flexDirection: "row", alignItems: "center", gap: 7, paddingBottom: 10, borderBottomColor: "#E5EAF0", borderBottomWidth: 1 },
+  orderDetailDeliveryMethod: { color: "#1D4ED8", fontSize: 13, fontWeight: "900" },
+  orderDetailInfoRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 11 },
+  orderDetailInfoLabel: { color: palette.muted, fontSize: 10, fontWeight: "800", marginBottom: 2 },
+  orderDetailInfoValue: { color: palette.ink, fontSize: 12, fontWeight: "800", lineHeight: 18 },
+  orderDetailRecipient: { color: palette.muted, fontSize: 11, fontWeight: "700", marginTop: 2 },
+  orderDetailShippingInfo: { color: palette.teal, fontSize: 11, fontWeight: "800", marginTop: 9 },
+  orderPaymentTotalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 2 },
+  orderPaymentLabel: { color: palette.muted, fontSize: 12, fontWeight: "800" },
+  orderPaymentAccount: { color: palette.muted, fontSize: 12, fontWeight: "700", marginTop: 7, lineHeight: 18 },
   lineRow: {
     paddingVertical: 7,
     borderBottomColor: palette.line,
