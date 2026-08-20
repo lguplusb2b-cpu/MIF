@@ -3,7 +3,7 @@
     "name": "MIF",
     "slug": "mif",
     "scheme": "mif",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "orientation": "portrait",
     "icon": "./assets/mif-icon.png",
     "userInterfaceStyle": "light",
@@ -20,7 +20,7 @@
       "predictiveBackGestureEnabled": false,
       "edgeToEdgeEnabled": false,
       "package": "com.lguplusb2b.mif",
-      "versionCode": 9,
+      "versionCode": 10,
       "permissions": [
         "POST_NOTIFICATIONS"
       ]
