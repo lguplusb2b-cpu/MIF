@@ -32,6 +32,7 @@ import {
   mifApi,
   setMifSessionToken,
   setMifUnauthorizedHandler,
+  type MifManagedUser,
   type MifSessionUser,
 } from "./src/api";
 import { describeSyncState, mergeServerSnapshot } from "./src/sync-workflows";
@@ -103,7 +104,11 @@ import {
   notificationsForOrderStatus,
   visibleNotifications,
 } from "./src/notification-workflows";
-import { presentPreviewPush } from "./src/push";
+import {
+  presentPreviewPush,
+  requestMifPushPermission,
+  subscribeMifPush,
+} from "./src/push";
 import {
   ALL_PRODUCT_CATEGORY_ID,
   filterProductsForListing,
@@ -302,6 +307,7 @@ function MifApp() {
   const [selectedOrder, setSelectedOrder] = useState<Order | undefined>();
   const [selectedQa, setSelectedQa] = useState<QAPost | undefined>();
   const [session, setSession] = useState<SessionUser | null>(null);
+  const [managedUsers, setManagedUsers] = useState<MifManagedUser[]>([]);
   const [productQuery, setProductQuery] = useState("");
   const [productCategory, setProductCategory] = useState<string>(
     ALL_PRODUCT_CATEGORY_ID,
@@ -470,6 +476,13 @@ function MifApp() {
     }
   };
 
+  const refreshManagedUsers = async () => {
+    if (!serverMode || session?.role !== "admin") return [];
+    const users = await mifApi.listManagedUsers();
+    setManagedUsers(users);
+    return users;
+  };
+
   useEffect(() => {
     setMifUnauthorizedHandler(() => {
       setSession(null);
@@ -509,6 +522,14 @@ function MifApp() {
     };
     void bootstrap();
   }, []);
+
+  useEffect(() => {
+    if (!serverMode || session?.role !== "admin") {
+      setManagedUsers([]);
+      return;
+    }
+    void refreshManagedUsers().catch(() => undefined);
+  }, [serverMode, session?.id, session?.role]);
 
   /** 다중 기기 사용 시 다른 기기의 변경을 반영하기 위해 주기적으로 스냅샷을 갱신한다. */
   useEffect(() => {
@@ -601,6 +622,44 @@ function MifApp() {
       clearInterval(timer);
     };
   }, [session]);
+
+  useEffect(() => {
+    if (!serverMode || !session) return;
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+    const registerDevicePush = async () => {
+      const permission = await requestMifPushPermission();
+      if (disposed || permission.status === "unsupported") return;
+      if (permission.status !== "granted" || !permission.token) {
+        notifyWarning("푸시 알림", permission.message);
+        return;
+      }
+      try {
+        await mifApi.registerPushToken(permission.token, Platform.OS);
+        unsubscribe = await subscribeMifPush(
+          () => {
+            void syncFromServer({ silent: true });
+            notify("주문 상태 알림", "주문 상태가 변경되어 최신 정보를 동기화했습니다.");
+          },
+          (payload) => {
+            void syncFromServer({ silent: true });
+            if (payload.orderId) goToPage("orders");
+          },
+        );
+      } catch (error) {
+        if (!disposed)
+          notifyWarning(
+            "푸시 알림 등록",
+            error instanceof Error ? error.message : "푸시 알림을 등록하지 못했습니다.",
+          );
+      }
+    };
+    void registerDevicePush();
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, [serverMode, session?.id]);
   const addProductToCart = (product: Product) => {
     if (!session)
       return showFeedback("로그인 필요", "로그인 후 발주할 수 있습니다.");
@@ -759,8 +818,25 @@ function MifApp() {
   };
   const reviewSignup = async (
     application: SignupApplication,
-    decision: ApplicationStatus,
+    decision: "approved" | "rejected",
   ) => {
+    if (serverMode) {
+      try {
+        await mifApi.reviewSignupApplication(application.id, { decision });
+        await syncFromServer({ silent: true });
+        await refreshManagedUsers();
+        notifySuccess(
+          "거래처 가입 신청 검토",
+          `${application.companyName} 신청을 ${decision === "approved" ? "승인" : "반려"}했습니다.`,
+        );
+      } catch (error) {
+        notifyError(
+          "거래처 가입 신청 검토",
+          error instanceof Error ? error.message : "가입 신청을 처리하지 못했습니다.",
+        );
+      }
+      return;
+    }
     const approvedAccount =
       decision === "approved"
         ? await accountFromApprovedApplication({ ...application, status: "approved" })
@@ -809,6 +885,21 @@ function MifApp() {
     nextRole: UserRole,
   ) => {
     try {
+      if (serverMode) {
+        const { user } = await mifApi.updateManagedUserRole(accountId, nextRole);
+        setManagedUsers((current) =>
+          current.map((account) => (account.id === user.id ? user : account)),
+        );
+        if (session?.id === accountId) {
+          setSession({ ...session, role: nextRole });
+          if (nextRole !== "admin") goToPage("more");
+        }
+        notifySuccess(
+          "권한 변경 완료",
+          `선택한 계정을 ${roleLabel[nextRole]}로 지정했습니다.`,
+        );
+        return;
+      }
       const previewAccounts = changePreviewAccountRole(
         data.previewAccounts,
         role,
@@ -828,6 +919,33 @@ function MifApp() {
       notifyError(
         "권한 변경 불가",
         error instanceof Error ? error.message : "권한을 변경할 수 없습니다.",
+      );
+    }
+  };
+  const updateManagedUserStatus = async (
+    accountId: string,
+    status: "active" | "inactive",
+  ) => {
+    try {
+      if (!serverMode) {
+        notifyWarning(
+          "서버 연결 필요",
+          "계정 활성 상태는 서버 연동 모드에서만 변경할 수 있습니다.",
+        );
+        return;
+      }
+      const { user } = await mifApi.updateManagedUserStatus(accountId, status);
+      setManagedUsers((current) =>
+        current.map((account) => (account.id === user.id ? user : account)),
+      );
+      notifySuccess(
+        "계정 상태 변경",
+        `${user.companyName || user.name} 계정을 ${status === "active" ? "활성화" : "비활성화"}했습니다.`,
+      );
+    } catch (error) {
+      notifyError(
+        "계정 상태 변경",
+        error instanceof Error ? error.message : "계정 상태를 변경하지 못했습니다.",
       );
     }
   };
@@ -1271,6 +1389,7 @@ function MifApp() {
         {page === "admin" && (
           <AdminPage
             data={data}
+            accounts={serverMode ? managedUsers : data.previewAccounts}
             onBack={goBack}
             onClose={goBack}
             onPage={goToPage}
@@ -1288,11 +1407,12 @@ function MifApp() {
         )}
         {page === "accountRoles" && isAdmin && (
           <AccountRolesPage
-            accounts={data.previewAccounts}
+            accounts={serverMode ? managedUsers : data.previewAccounts}
             currentAccountId={session?.id}
             onBack={goBack}
             onClose={goBack}
             onChangeRole={updatePreviewAccountRole}
+            onChangeStatus={updateManagedUserStatus}
           />
         )}
         {page === "passwordRequests" && (
@@ -1323,12 +1443,16 @@ function MifApp() {
               editingBankRef.current = undefined;
               setSheet("bank");
             }}
-            onDelete={async (id) =>
-              await persist({
-                ...data,
-                banks: data.banks.filter((bank) => bank.id !== id),
-              })
-            }
+            onDelete={async (id) => {
+              await runServerFirst(
+                () => mifApi.deleteBankAccount(id),
+                () =>
+                  persist({
+                    ...data,
+                    banks: data.banks.filter((bank) => bank.id !== id),
+                  }),
+              );
+            }}
           />
         )}
         {page === "categories" && (
@@ -1383,7 +1507,7 @@ function MifApp() {
             loginId,
             password,
           );
-          if (previewAccount) {
+          if (!serverMode && previewAccount) {
             setSession({
               id: previewAccount.id,
               loginId: previewAccount.loginId,
@@ -1682,6 +1806,7 @@ function MifApp() {
               accountNumber: bank.accountNumber,
               accountHolder: bank.accountHolder,
               isActive: bank.isActive,
+              isDefault: bank.isDefault === true,
             };
             await runServerFirst(
               () =>
@@ -3442,6 +3567,7 @@ function AppInfoPage({ onBack, onClose }: { onBack: () => void; onClose: () => v
 
 function AdminPage({
   data,
+  accounts,
   onBack,
   onClose,
   onPage,
@@ -3449,6 +3575,7 @@ function AdminPage({
   onBulk,
 }: {
   data: MifData;
+  accounts: Array<{ role: UserRole }>;
   onBack: () => void;
   onClose: () => void;
   onPage: (page: Page) => void;
@@ -3506,7 +3633,7 @@ function AdminPage({
       <AdminGrid
         icon="shield-checkmark-outline"
         label="계정 권한 관리"
-        copy={`관리자 ${data.previewAccounts.filter((account) => account.role === "admin").length}명 · 거래처 ${data.previewAccounts.filter((account) => account.role === "customer").length}명`}
+        copy={`관리자 ${accounts.filter((account) => account.role === "admin").length}명 · 거래처 ${accounts.filter((account) => account.role === "customer").length}명`}
         onPress={() => onPage("accountRoles")}
       />
       <AdminGrid
@@ -3546,12 +3673,21 @@ function AccountRolesPage({
   onBack,
   onClose,
   onChangeRole,
+  onChangeStatus,
 }: {
-  accounts: PreviewAccount[];
+  accounts: Array<{
+    id: string;
+    loginId: string;
+    name?: string;
+    companyName?: string;
+    role: UserRole;
+    status: "active" | "inactive";
+  }>;
   currentAccountId?: string;
   onBack: () => void;
   onClose: () => void;
   onChangeRole: (accountId: string, role: UserRole) => void;
+  onChangeStatus: (accountId: string, status: "active" | "inactive") => void;
 }) {
   const sortedAccounts = [...accounts].sort(
     (left, right) => Number(right.role === "admin") - Number(left.role === "admin"),
@@ -3589,7 +3725,7 @@ function AccountRolesPage({
             <View style={styles.accountRoleCard}>
               <View style={styles.sectionRow}>
                 <View style={{ flex: 1, gap: 3 }}>
-                  <Text style={styles.strong}>{account.name}</Text>
+                  <Text style={styles.strong}>{account.name || account.loginId}</Text>
                   <Text style={styles.muted}>
                     {account.companyName ? `${account.companyName} · ` : ""}
                     {account.loginId}
@@ -3639,6 +3775,24 @@ function AccountRolesPage({
                   ]}
                 >
                   <Text style={styles.roleActionText}>관리자 지정</Text>
+                </Pressable>
+                <Pressable
+                  disabled={isCurrentAccount}
+                  onPress={() =>
+                    onChangeStatus(
+                      account.id,
+                      account.status === "active" ? "inactive" : "active",
+                    )
+                  }
+                  style={[
+                    styles.roleActionButton,
+                    account.status === "inactive" && styles.roleActionButtonDisabled,
+                    isCurrentAccount && styles.roleActionButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.roleActionText}>
+                    {account.status === "active" ? "사용 중지" : "사용 재개"}
+                  </Text>
                 </Pressable>
               </View>
             </View>
@@ -3945,7 +4099,7 @@ function ApplicationsPage({
   onClose: () => void;
   onReview: (
     application: SignupApplication,
-    decision: ApplicationStatus,
+    decision: "approved" | "rejected",
   ) => void;
 }) {
   return (
@@ -4101,6 +4255,7 @@ function BanksPage({
             <View style={styles.sectionRow}>
               <Text style={styles.strong}>
                 {item.bankName} · {item.accountHolder}
+                {item.isDefault ? <Text style={styles.defaultTag}> 기본</Text> : null}
               </Text>
               <View style={{ flexDirection: "row", gap: 8 }}>
                 <Pressable onPress={() => onEdit(item)}>
@@ -5605,12 +5760,14 @@ function BankSheet({
   const [accountNumber, setAccountNumber] = useState(bank?.accountNumber ?? "");
   const [holder, setHolder] = useState(bank?.accountHolder ?? "");
   const [active, setActive] = useState(bank?.isActive ?? true);
+  const [isDefault, setIsDefault] = useState(bank?.isDefault ?? !bank);
   useEffect(() => {
     if (visible) {
       setBankName(bank?.bankName ?? "");
       setAccountNumber(bank?.accountNumber ?? "");
       setHolder(bank?.accountHolder ?? "");
       setActive(bank?.isActive ?? true);
+      setIsDefault(bank?.isDefault ?? !bank);
     }
   }, [visible, bank]);
   return (
@@ -5646,6 +5803,18 @@ function BankSheet({
           trackColor={{ true: palette.teal }}
         />
       </View>
+      <View style={styles.switchRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.strong}>기본 결제 계좌</Text>
+          <Text style={styles.muted}>거래처 주문 화면에 우선 안내됩니다.</Text>
+        </View>
+        <Switch
+          value={isDefault}
+          onValueChange={setIsDefault}
+          disabled={!active}
+          trackColor={{ true: palette.teal }}
+        />
+      </View>
       <Primary
         text="저장"
         onPress={() => {
@@ -5663,6 +5832,7 @@ function BankSheet({
             accountNumber,
             accountHolder: holder,
             isActive: active,
+            isDefault: active && isDefault,
           });
         }}
       />

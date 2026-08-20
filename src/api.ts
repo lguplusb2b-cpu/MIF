@@ -211,13 +211,18 @@ export const mifApi = {
       method: "PATCH",
       body: JSON.stringify({ role }),
     }),
+  updateManagedUserStatus: (userId: string, status: "active" | "inactive") =>
+    request<{ user: MifManagedUser }>(`/api/admin/users/${userId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
 
   listNotifications: (userId: string) =>
     request<AppNotification[]>(`/api/notifications?userId=${encodeURIComponent(userId)}`),
   markNotificationRead: (id: string) =>
     request<{ success: true }>(`/api/notifications/${id}/read`, { method: "PATCH" }),
-  registerPushToken: (userId: string, token: string, platform: string) =>
-    request<{ success: true }>("/api/push-tokens", { method: "POST", body: JSON.stringify({ userId, token, platform }) }),
+  registerPushToken: (token: string, platform: string) =>
+    request<{ success: true }>("/api/push-tokens", { method: "POST", body: JSON.stringify({ token, platform }) }),
 
   /** 관리자 주문 CSV 내보내기 주소. 세션 토큰을 쿼리로 전달해 브라우저·앱에서 바로 열 수 있다. */
   orderExportUrl: (params?: { from?: string; to?: string }) => {

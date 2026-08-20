@@ -101,6 +101,8 @@ export type BankAccount = {
   accountNumber: string;
   accountHolder: string;
   isActive: boolean;
+  /** 거래처 주문 화면에 기본으로 안내하는 운영 결제계좌입니다. */
+  isDefault?: boolean;
 };
 
 export type Order = {
@@ -219,6 +221,8 @@ export type AppNotification = {
   body: string;
   type: NotificationType;
   recipientRole: NotificationAudience;
+  recipientUserId?: string;
+  recipientCompanyId?: string;
   isRead: boolean;
   createdAt: string;
   data?: Record<string, string>;
