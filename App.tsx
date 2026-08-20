@@ -120,6 +120,7 @@ import {
   sortProductsForListing,
   type ProductSortOption,
 } from "./src/product-workflows";
+import { getNoticeDateRangeError, isNoticeDateSelectable } from "./src/notice-workflows";
 import {
   deliveryMethodPresentation,
   formatDesiredDelivery,
@@ -6143,6 +6144,10 @@ function NoticeSheet({
   const [visibleNow, setVisibleNow] = useState(notice?.isVisible ?? true);
   const [startDate, setStartDate] = useState(notice?.startDate ?? today());
   const [endDate, setEndDate] = useState(notice?.endDate ?? "");
+  const [datePickerVisible, setDatePickerVisible] = useState(false);
+  const [datePickerTarget, setDatePickerTarget] = useState<"start" | "end">("start");
+  const [selectedDate, setSelectedDate] = useState(today());
+  const [selectedMonth, setSelectedMonth] = useState(() => monthStartFor());
   useEffect(() => {
     if (visible) {
       setTitle(notice?.title ?? "");
@@ -6150,8 +6155,21 @@ function NoticeSheet({
       setVisibleNow(notice?.isVisible ?? true);
       setStartDate(notice?.startDate ?? today());
       setEndDate(notice?.endDate ?? "");
+      setDatePickerVisible(false);
     }
   }, [visible, notice]);
+  const openDatePicker = (target: "start" | "end") => {
+    const value = target === "start" ? startDate : endDate || startDate;
+    setDatePickerTarget(target);
+    setSelectedDate(value || today());
+    setSelectedMonth(monthStartFor(value));
+    setDatePickerVisible(true);
+  };
+  const saveDatePicker = () => {
+    if (datePickerTarget === "start") setStartDate(selectedDate);
+    else setEndDate(selectedDate);
+    setDatePickerVisible(false);
+  };
   return (
     <Sheet
       visible={visible}
@@ -6171,18 +6189,33 @@ function NoticeSheet({
         placeholder="공지 내용을 입력하세요"
         multiline
       />
-      <Field
-        label="노출 시작일"
-        value={startDate}
-        onChangeText={setStartDate}
-        placeholder="YYYY-MM-DD"
-      />
-      <Field
-        label="노출 종료일 (선택)"
-        value={endDate}
-        onChangeText={setEndDate}
-        placeholder="YYYY-MM-DD"
-      />
+      <Text style={styles.fieldLabel}>노출 기간</Text>
+      <View style={styles.noticeDateRow}>
+        <Pressable
+          accessibilityLabel="공지 노출 시작일 선택"
+          style={styles.noticeDateInput}
+          onPress={() => openDatePicker("start")}
+        >
+          {icon("calendar-outline", palette.teal, 17)}
+          <View style={styles.noticeDateInputCopy}>
+            <Text style={styles.noticeDateInputLabel}>시작일</Text>
+            <Text style={styles.noticeDateInputValue}>{startDate}</Text>
+          </View>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="공지 노출 종료일 선택"
+          style={styles.noticeDateInput}
+          onPress={() => openDatePicker("end")}
+        >
+          {icon("calendar-outline", palette.teal, 17)}
+          <View style={styles.noticeDateInputCopy}>
+            <Text style={styles.noticeDateInputLabel}>종료일</Text>
+            <Text style={[styles.noticeDateInputValue, !endDate && styles.periodDatePlaceholder]}>
+              {endDate || "선택 안 함"}
+            </Text>
+          </View>
+        </Pressable>
+      </View>
       <View style={styles.switchRow}>
         <Text style={styles.strong}>즉시 노출</Text>
         <Switch
@@ -6198,6 +6231,11 @@ function NoticeSheet({
             onNotice("입력 확인", "제목과 내용을 입력해 주세요.", "warning");
             return;
           }
+          const dateError = getNoticeDateRangeError(startDate, endDate);
+          if (dateError) {
+            onNotice("노출 기간 확인", dateError, "warning");
+            return;
+          }
           onSave({
             id: notice?.id ?? makeId("notice"),
             title,
@@ -6210,6 +6248,58 @@ function NoticeSheet({
           });
         }}
       />
+      <Modal
+        visible={datePickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDatePickerVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.confirmModal}>
+            <ModalCloseButton
+              accessibilityLabel="공지 노출 날짜 선택 닫기"
+              onPress={() => setDatePickerVisible(false)}
+            />
+            <Text style={styles.modalTitle}>
+              {datePickerTarget === "start" ? "공지 노출 시작일 선택" : "공지 노출 종료일 선택"}
+            </Text>
+            <DateOptionPicker
+              date={selectedDate}
+              onDateChange={setSelectedDate}
+              month={selectedMonth}
+              onMonthChange={setSelectedMonth}
+              minimumDate={datePickerTarget === "end" ? startDate : undefined}
+              maximumDate={datePickerTarget === "start" ? endDate || undefined : undefined}
+            />
+            <View style={styles.modalActionRow}>
+              {datePickerTarget === "end" ? (
+                <Pressable
+                  style={styles.outlineButton}
+                  onPress={() => {
+                    setEndDate("");
+                    setDatePickerVisible(false);
+                  }}
+                >
+                  <Text style={styles.outlineText}>종료일 없음</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={styles.outlineButton}
+                  onPress={() => {
+                    setSelectedDate(today());
+                    setSelectedMonth(monthStartFor());
+                  }}
+                >
+                  <Text style={styles.outlineText}>오늘</Text>
+                </Pressable>
+              )}
+              <Pressable style={styles.primaryButton} onPress={saveDatePicker}>
+                <Text style={styles.primaryText}>선택 완료</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Sheet>
   );
 }
@@ -6919,6 +7009,95 @@ function DateTimeOptionPicker({
             </Text>
           </Pressable>
         ))}
+      </View>
+    </View>
+  );
+}
+
+function DateOptionPicker({
+  date,
+  onDateChange,
+  month,
+  onMonthChange,
+  minimumDate,
+  maximumDate,
+}: {
+  date: string;
+  onDateChange: (value: string) => void;
+  month?: Date;
+  onMonthChange?: (value: Date) => void;
+  minimumDate?: string;
+  maximumDate?: string;
+}) {
+  const [internalMonth, setInternalMonth] = useState(() => monthStartFor(date || minimumDate));
+  const visibleMonth = month ?? internalMonth;
+  const updateMonth = (value: Date) => {
+    const next = new Date(value.getFullYear(), value.getMonth(), 1);
+    if (onMonthChange) onMonthChange(next);
+    else setInternalMonth(next);
+  };
+  useEffect(() => {
+    if (!month && date) setInternalMonth(monthStartFor(date));
+  }, [date, month]);
+  const calendarDays = useMemo(() => {
+    const year = visibleMonth.getFullYear();
+    const monthIndex = visibleMonth.getMonth();
+    const leadingEmpty = new Date(year, monthIndex, 1).getDay();
+    const lastDate = new Date(year, monthIndex + 1, 0).getDate();
+    return [
+      ...Array.from({ length: leadingEmpty }, () => ""),
+      ...Array.from({ length: lastDate }, (_, index) => localDateValue(new Date(year, monthIndex, index + 1))),
+    ];
+  }, [visibleMonth]);
+  const minimumMonth = minimumDate ? monthStartFor(minimumDate) : undefined;
+  const maximumMonth = maximumDate ? monthStartFor(maximumDate) : undefined;
+  const canGoPrevious = !minimumMonth || visibleMonth.getTime() > minimumMonth.getTime();
+  const canGoNext = !maximumMonth || visibleMonth.getTime() < maximumMonth.getTime();
+  return (
+    <View style={styles.dateTimePicker}>
+      <Text style={styles.fieldLabel}>날짜</Text>
+      <View style={styles.calendarNav}>
+        <Pressable
+          accessibilityLabel="이전 달"
+          disabled={!canGoPrevious}
+          style={[styles.monthArrow, !canGoPrevious && styles.monthArrowDisabled]}
+          onPress={() => updateMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1))}
+        >
+          {icon("chevron-back", canGoPrevious ? palette.teal : palette.line, 20)}
+        </Pressable>
+        <Text style={styles.calendarMonthLabel}>{calendarMonthLabel(visibleMonth)}</Text>
+        <Pressable
+          accessibilityLabel="다음 달"
+          disabled={!canGoNext}
+          style={[styles.monthArrow, !canGoNext && styles.monthArrowDisabled]}
+          onPress={() => updateMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1))}
+        >
+          {icon("chevron-forward", canGoNext ? palette.teal : palette.line, 20)}
+        </Pressable>
+      </View>
+      <View style={styles.calendarWeekRow}>
+        {["일", "월", "화", "수", "목", "금", "토"].map((weekday) => (
+          <Text key={weekday} style={styles.calendarWeekday}>{weekday}</Text>
+        ))}
+      </View>
+      <View style={styles.calendarGrid}>
+        {calendarDays.map((option, index) => {
+          if (!option) return <View key={`empty-${index}`} style={styles.calendarDayBlank} />;
+          const disabled = !isNoticeDateSelectable(option, { minimumDate, maximumDate });
+          return (
+            <Pressable
+              key={option}
+              accessibilityLabel={`${dateChoiceLabel(option)} 선택`}
+              disabled={disabled}
+              style={[styles.calendarDay, date === option && styles.calendarDayActive, disabled && styles.calendarDayDisabled]}
+              onPress={() => onDateChange(option)}
+            >
+              <Text style={[styles.calendarDayText, date === option && styles.calendarDayTextActive, disabled && styles.calendarDayTextDisabled]}>
+                {option.slice(-2).replace(/^0/, "")}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
     </View>
   );
@@ -7974,6 +8153,22 @@ const styles: any = StyleSheet.create({
   },
   periodDateText: { flex: 1, color: palette.ink, fontSize: 11, fontWeight: "700" },
   periodDatePlaceholder: { color: "#98A2B3", fontWeight: "600" },
+  noticeDateRow: { flexDirection: "row", gap: 8, marginBottom: 4 },
+  noticeDateInput: {
+    flex: 1,
+    minHeight: 54,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    borderColor: palette.line,
+    borderWidth: 1,
+    backgroundColor: "#FAFCFD",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  noticeDateInputCopy: { flex: 1, gap: 2 },
+  noticeDateInputLabel: { color: palette.muted, fontSize: 10, fontWeight: "800" },
+  noticeDateInputValue: { color: palette.ink, fontSize: 12, fontWeight: "800" },
   quickRangeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginTop: 10 },
   quickRangeLabel: { color: palette.muted, fontSize: 11, fontWeight: "800", marginRight: 1 },
   quickRangeButton: {
