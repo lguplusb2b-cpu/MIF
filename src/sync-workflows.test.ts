@@ -76,6 +76,23 @@ describe("서버 스냅샷 동기화 규칙", () => {
     expect(Object.keys(sync)).not.toContain("syncedAt");
   });
 
+  it("서버 스냅샷의 전체상품·중복 ID·중복 이름 카테고리를 한 번만 동기화한다", () => {
+    const categories = snapshotToSyncData(
+      {
+        ...snapshot,
+        categories: [
+          { id: "ALL", name: "전체상품", isActive: true, sortOrder: 0 },
+          { id: "cat-1", name: "가공식품", isActive: true, sortOrder: 1 },
+          { id: "cat-1", name: "중복 ID", isActive: true, sortOrder: 2 },
+          { id: "cat-2", name: " 가공식품 ", isActive: true, sortOrder: 3 },
+          { id: "cat-3", name: "냉동식품", isActive: true, sortOrder: 4 },
+        ],
+      } as MifServerSnapshot,
+      emptyMifData,
+    ).categories;
+    expect(categories.map((category) => category.id)).toEqual(["cat-1", "cat-3"]);
+  });
+
   it("서버의 판매 상태·보관 상태를 상품 목록으로 그대로 동기화한다", () => {
     const inactiveSnapshot = {
       ...snapshot,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createPreviewMifData } from "./domain";
 import {
+  deduplicateCategories,
   moveCategory,
+  orderedAdminCategories,
   orderedProductCategories,
   reorderCategories,
   removeCategory,
@@ -20,6 +22,21 @@ describe("카테고리 관리 워크플로", () => {
       "가공식품",
       "소모품",
     ]);
+  });
+
+  it("전체상품 합성 항목을 제외하고 실제 카테고리는 ID·이름별로 한 번만 노출한다", () => {
+    const categories = deduplicateCategories([
+      { id: "ALL", name: "전체상품", icon: "", sortOrder: 0, isActive: true },
+      { id: "cat-1", name: "양념육", icon: "🥩", sortOrder: 1, isActive: true },
+      { id: "cat-1", name: "다른 이름", icon: "", sortOrder: 2, isActive: true },
+      { id: "cat-2", name: " 양념육 ", icon: "", sortOrder: 3, isActive: true },
+      { id: "cat-3", name: "포장육", icon: "", sortOrder: 4, isActive: true },
+    ]);
+    expect(categories.map((item) => item.id)).toEqual(["cat-1", "cat-3"]);
+    expect(orderedAdminCategories([
+      ...categories,
+      { id: "hidden", name: "숨김", icon: "", sortOrder: 5, isActive: false },
+    ]).map((item) => item.id)).toEqual(["cat-1", "cat-3", "hidden"]);
   });
 
   it("카테고리 이름 수정은 연결된 상품의 분류명에도 즉시 반영한다", () => {

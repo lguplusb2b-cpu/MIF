@@ -59,6 +59,7 @@ import {
 } from "./src/address-workflows";
 import {
   moveCategory,
+  orderedAdminCategories,
   orderedProductCategories,
   reorderCategories,
   removeCategory,
@@ -562,12 +563,7 @@ function MifApp() {
     [data.categories],
   );
   const adminCategories = useMemo(
-    () =>
-      [...data.categories].sort(
-        (left, right) =>
-          left.sortOrder - right.sortOrder ||
-          left.name.localeCompare(right.name, "ko"),
-      ),
+    () => orderedAdminCategories(data.categories),
     [data.categories],
   );
 
@@ -2413,7 +2409,7 @@ function ProductsPage({
   onClose?: () => void;
 }) {
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
-  const visibleCategories = categories.filter((item) => item.isActive);
+  const visibleCategories = orderedProductCategories(categories);
   const selectedSort =
     PRODUCT_SORT_OPTIONS.find((option) => option.id === sort) ??
     PRODUCT_SORT_OPTIONS[0];
@@ -5205,7 +5201,7 @@ function ProductSheet({
   const [isDeleting, setIsDeleting] = useState(false);
   /** 같은 상품 시트를 열어 둔 동안 서버 스냅샷 갱신으로 작성 중인 값을 덮어쓰지 않는다. */
   const initializedProductKeyRef = useRef<string | null>(null);
-  const visibleCategories = categories.filter((item) => item.isActive);
+  const visibleCategories = orderedProductCategories(categories);
   useEffect(() => {
     if (!visible) {
       initializedProductKeyRef.current = null;

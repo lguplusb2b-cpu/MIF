@@ -7,6 +7,7 @@ import type {
   Product,
   QAPost,
 } from "./domain";
+import { deduplicateCategories } from "./category-workflows";
 
 /** 서버 상품 응답을 앱 상품 도메인으로 변환한다. */
 export function toAppProduct(row: Record<string, unknown>): Product {
@@ -134,8 +135,11 @@ export function snapshotToSyncData(snapshot: MifServerSnapshot, current: MifData
   const categoryById = new Map(current.categories.map((item) => [item.id, item]));
   return {
     products: (snapshot.products as unknown as Record<string, unknown>[]).map(toAppProduct),
-    categories: (snapshot.categories as unknown as Record<string, unknown>[]).map((row) =>
-      toAppCategory(row, categoryById.get(String(row.id))),
+    categories: deduplicateCategories(
+      (snapshot.categories as unknown as Record<string, unknown>[]).map((row) =>
+        toAppCategory(row, categoryById.get(String(row.id))),
+      ),
+      { includeInactive: true },
     ),
     banks: snapshot.banks ?? [],
     notices: snapshot.notices ?? [],

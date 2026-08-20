@@ -1,12 +1,46 @@
 import type { Category, MifData } from "./domain";
 
-export function orderedProductCategories(categories: Category[]) {
+function categoryNameKey(name: string) {
+  return name.trim().toLocaleLowerCase("ko");
+}
+
+function isSyntheticAllCategory(category: Category) {
+  return category.id.trim().toLocaleLowerCase("ko") === "all" || categoryNameKey(category.name) === "전체상품";
+}
+
+/** 카테고리는 노출 순서대로 정렬하고, 합성 전체상품·ID·이름 중복을 제거한다. */
+export function deduplicateCategories(
+  categories: Category[],
+  options: { includeInactive?: boolean } = {},
+) {
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
   return [...categories]
-    .filter((category) => category.isActive)
+    .filter((category) => options.includeInactive || category.isActive)
+    .filter((category) => !isSyntheticAllCategory(category))
     .sort(
       (left, right) =>
-        left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, "ko"),
-    );
+        Number(right.isActive) - Number(left.isActive) ||
+        left.sortOrder - right.sortOrder ||
+        left.name.localeCompare(right.name, "ko"),
+    )
+    .filter((category) => {
+      const idKey = category.id.trim();
+      const nameKey = categoryNameKey(category.name);
+      if (!idKey || !nameKey || seenIds.has(idKey) || seenNames.has(nameKey)) return false;
+      seenIds.add(idKey);
+      seenNames.add(nameKey);
+      return true;
+    });
+}
+
+export function orderedProductCategories(categories: Category[]) {
+  return deduplicateCategories(categories);
+}
+
+/** 관리자 카테고리 관리 화면은 비활성 항목을 포함하되, 중복 항목은 한 번만 표시한다. */
+export function orderedAdminCategories(categories: Category[]) {
+  return deduplicateCategories(categories, { includeInactive: true });
 }
 
 export function reorderCategories(
