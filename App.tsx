@@ -1015,9 +1015,8 @@ function MifApp() {
         status: orderStatus,
         from: orderFrom || undefined,
         to: orderTo || undefined,
-        companyName: isAdmin
-          ? adminCompanyQuery || undefined
-          : session?.companyName || undefined,
+        companyName: isAdmin ? undefined : session?.companyName || undefined,
+        query: isAdmin ? adminCompanyQuery || undefined : undefined,
       }),
     [
       data.orders,
@@ -1134,10 +1133,12 @@ function MifApp() {
             from={orderFrom}
             to={orderTo}
             isAdmin={isAdmin}
+            companyQuery={adminCompanyQuery}
             selectedIds={selectedOrderIds}
             onStatus={setOrderStatus}
             onFrom={setOrderFrom}
             onTo={setOrderTo}
+            onCompanyQuery={setAdminCompanyQuery}
             onSelect={updateOrderSelection}
             onOpen={(order) => {
               setSelectedOrder(order);
@@ -3121,10 +3122,12 @@ function OrdersPage({
   from,
   to,
   isAdmin,
+  companyQuery,
   selectedIds,
   onStatus,
   onFrom,
   onTo,
+  onCompanyQuery,
   onSelect,
   onOpen,
   onBulk,
@@ -3136,10 +3139,12 @@ function OrdersPage({
   from: string;
   to: string;
   isAdmin: boolean;
+  companyQuery: string;
   selectedIds: string[];
   onStatus: (status: OrderStatus | "ALL") => void;
   onFrom: (value: string) => void;
   onTo: (value: string) => void;
+  onCompanyQuery: (value: string) => void;
   onSelect: (id: string) => void;
   onOpen: (order: Order) => void;
   onBulk: () => void;
@@ -3250,6 +3255,30 @@ function OrdersPage({
           />
         ))}
       </ScrollView>
+      {isAdmin ? (
+        <View style={styles.orderSearchBox}>
+          {icon("business-outline", palette.teal, 18)}
+          <TextInput
+            value={companyQuery}
+            onChangeText={onCompanyQuery}
+            placeholder="거래처명 또는 주문번호 검색"
+            placeholderTextColor={palette.muted}
+            style={styles.orderSearchInput}
+            accessibilityLabel="거래처별 주문 검색"
+          />
+          {companyQuery ? (
+            <Pressable
+              accessibilityLabel="거래처 주문 검색어 지우기"
+              onPress={() => onCompanyQuery("")}
+            >
+              {icon("close-circle", palette.muted, 19)}
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {isAdmin && companyQuery ? (
+        <Text style={styles.orderSearchResult}>"{companyQuery}" 검색 결과 {orders.length}건</Text>
+      ) : null}
       {isAdmin && selectedIds.length > 0 && (
         <Pressable style={styles.bulkButton} onPress={onBulk}>
           <Text style={styles.bulkText}>

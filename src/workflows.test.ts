@@ -25,9 +25,11 @@ describe("MIF 발주 워크플로", () => {
 
   it("기간·상태·거래처 기준으로 주문을 필터링한다", () => {
     const first = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", bankAccountId, companyName: "MIF 거래처" });
-    const second = { ...first, id: "ord_2", status: "PAID" as const, createdAt: "2026-08-18T00:00:00.000Z" };
+    const second = { ...first, id: "ord_2", orderNumber: "MIF-20260818-0002", status: "PAID" as const, createdAt: "2026-08-18T00:00:00.000Z" };
     expect(filterOrders([first, second], { status: "PAID" })).toEqual([second]);
     expect(filterOrders([first, second], { companyName: "MIF" })).toHaveLength(2);
+    expect(filterOrders([first, second], { query: "거래처", status: "PAID", to: "2026-08-18" })).toEqual([second]);
+    expect(filterOrders([first, second], { query: second.orderNumber })).toEqual([second]);
   });
 
   it("기간 조회에서 날짜·시간 범위를 적용하고 날짜만 입력하면 하루 전체를 조회한다", () => {

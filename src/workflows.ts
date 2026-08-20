@@ -98,7 +98,7 @@ export function advanceOrder(order: Order, next?: OrderStatus): Order {
   return { ...order, status: allowed };
 }
 
-export function filterOrders(orders: Order[], filters: { status?: OrderStatus | "ALL"; from?: string; to?: string; companyName?: string }) {
+export function filterOrders(orders: Order[], filters: { status?: OrderStatus | "ALL"; from?: string; to?: string; companyName?: string; query?: string }) {
   const rangeBoundary = (value: string | undefined, edge: "start" | "end") => {
     if (!value) return undefined;
     const normalized = value.includes("T")
@@ -109,11 +109,14 @@ export function filterOrders(orders: Order[], filters: { status?: OrderStatus | 
   };
   const fromTimestamp = rangeBoundary(filters.from, "start");
   const toTimestamp = rangeBoundary(filters.to, "end");
+  const query = filters.query?.trim().toLowerCase();
   return orders.filter((order) => {
     const createdAtTimestamp = Date.parse(order.createdAt);
+    const searchable = `${order.companyName ?? ""} ${order.orderNumber}`.toLowerCase();
     return (!filters.status || filters.status === "ALL" || order.status === filters.status)
       && (fromTimestamp === undefined || createdAtTimestamp >= fromTimestamp)
       && (toTimestamp === undefined || createdAtTimestamp <= toTimestamp)
-      && (!filters.companyName || (order.companyName ?? "").includes(filters.companyName));
+      && (!filters.companyName || (order.companyName ?? "").includes(filters.companyName))
+      && (!query || searchable.includes(query));
   });
 }
