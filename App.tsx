@@ -2350,6 +2350,7 @@ function ProductsPage({
   onClose?: () => void;
 }) {
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const visibleCategories = categories.filter((item) => item.isActive);
   const selectedSort =
     PRODUCT_SORT_OPTIONS.find((option) => option.id === sort) ??
     PRODUCT_SORT_OPTIONS[0];
@@ -2412,7 +2413,7 @@ function ProductsPage({
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.categoryFilterScrollContent}
             >
-              {categories.map((item) => (
+              {visibleCategories.map((item) => (
                 <Chip
                   key={item.id}
                   label={`${item.icon} ${item.name}`}
@@ -5102,6 +5103,7 @@ function ProductSheet({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [adminPreview, setAdminPreview] = useState(false);
+  const visibleCategories = categories.filter((item) => item.isActive);
   useEffect(() => {
     if (visible) {
       const defaultCategory = categories.find((item) => item.isActive);
@@ -5254,10 +5256,11 @@ function ProductSheet({
           <Text style={styles.fieldLabel}>카테고리</Text>
           <ScrollView
             horizontal
+            style={styles.categoryChipScroller}
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.chipRow}
+            contentContainerStyle={styles.categoryChipRow}
           >
-            {categories.map((item) => (
+            {visibleCategories.map((item) => (
               <Chip
                 key={item.id}
                 label={`${item.icon} ${item.name}`}
@@ -7557,10 +7560,12 @@ const styles: any = StyleSheet.create({
     justifyContent: "center",
   },
   categoryFilterRow: {
+    minHeight: 50,
     paddingHorizontal: 18,
-    paddingVertical: 8,
+    paddingVertical: 5,
     flexDirection: "row",
     alignItems: "center",
+    overflow: "visible",
   },
   categoryFilterDivider: {
     width: 1,
@@ -7568,11 +7573,28 @@ const styles: any = StyleSheet.create({
     marginHorizontal: 8,
     backgroundColor: palette.line,
   },
-  categoryFilterScroll: { flex: 1 },
+  categoryFilterScroll: { flex: 1, minWidth: 0, overflow: "visible" },
   categoryFilterScrollContent: {
+    flexDirection: "row",
     gap: 7,
     paddingRight: 18,
+    paddingVertical: 5,
     alignItems: "center",
+  },
+  categoryChipScroller: { minHeight: 44, maxHeight: 44, overflow: "visible" },
+  categoryChipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 1,
+    paddingVertical: 5,
+  },
+  chipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 1,
+    paddingVertical: 5,
   },
   filterRow: {
     paddingHorizontal: 18,
@@ -7632,18 +7654,21 @@ const styles: any = StyleSheet.create({
   sortOptionLabelActive: { color: palette.teal },
   sortOptionDescription: { color: palette.muted, fontSize: 11 },
   chip: {
-    minHeight: 32,
+    height: 34,
+    minHeight: 34,
+    flexShrink: 0,
     paddingHorizontal: 11,
-    paddingVertical: 5,
+    paddingVertical: 0,
     borderRadius: 18,
     borderColor: palette.line,
     borderWidth: 1,
     backgroundColor: palette.surface,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "visible",
   },
   chipActive: { backgroundColor: palette.teal, borderColor: palette.teal },
-  chipText: { color: palette.muted, fontSize: 11, fontWeight: "800" },
+  chipText: { color: palette.muted, fontSize: 11, lineHeight: 15, includeFontPadding: false, fontWeight: "800" },
   chipTextActive: { color: "#fff" },
   list: { padding: 18, gap: 10, paddingBottom: 98 },
   empty: {
