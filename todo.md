@@ -196,4 +196,4 @@
 - [x] MIF 1.0.9 Android 앱 실행 직후 충돌 원인과 최근 네이티브 변경 진단
 - [x] Android 실행 충돌 원인 수정 및 Expo 네이티브 구성 정합성 보완
 - [ ] 수정 구성 Expo 진단·TypeScript·단위 테스트·APK 설치 검증
-- [ ] 실행 충돌 수정 Android APK 재빌드 및 설치 파일 전달
+- [x] 실행 충돌 수정 Android APK 재빌드 및 설치 파일 전달
