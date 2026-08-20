@@ -779,6 +779,8 @@ function MifApp() {
   const changeOrderStatus = async (order: Order, status?: OrderStatus) => {
     try {
       const changed = advanceOrder(order, status);
+      const previousLabel = orderStatusLabel[order.status];
+      const changedLabel = orderStatusLabel[changed.status];
       if (serverMode && serverOnline) {
         await mifApi.updateOrderStatus(order.id, {
           status: changed.status,
@@ -790,6 +792,11 @@ function MifApp() {
           current?.id === changed.id ? changed : current,
         );
         await syncFromServer({ silent: true });
+        showFeedback(
+          "주문 상태 변경",
+          `${order.orderNumber} 주문을 ${previousLabel}에서 ${changedLabel} 단계로 변경했습니다.`,
+          "success",
+        );
         return;
       }
       const next = {
@@ -808,6 +815,11 @@ function MifApp() {
           orderStatusLabel[changed.status],
           changed.status,
         ),
+      );
+      showFeedback(
+        "주문 상태 변경",
+        `${order.orderNumber} 주문을 ${previousLabel}에서 ${changedLabel} 단계로 변경했습니다.`,
+        "success",
       );
     } catch (error) {
       showFeedback(

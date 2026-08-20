@@ -23,6 +23,26 @@ describe("MIF 발주 워크플로", () => {
     expect(advanceOrder(order, "CANCELED").status).toBe("CANCELED");
   });
 
+  it("관리자 주문은 접수부터 배송완료까지 한 단계씩만 진행한다", () => {
+    const received = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", bankAccountId });
+    const paid = advanceOrder(received);
+    const confirmed = advanceOrder(paid);
+    const preparing = advanceOrder(confirmed);
+    const shipping = advanceOrder(preparing);
+    const delivered = advanceOrder(shipping);
+
+    expect([received, paid, confirmed, preparing, shipping, delivered].map((order) => order.status)).toEqual([
+      "RECEIVED",
+      "PAID",
+      "CONFIRMED",
+      "PREPARING",
+      "SHIPPING",
+      "DELIVERED",
+    ]);
+    expect(() => advanceOrder(received, "SHIPPING")).toThrow("허용되지 않은 주문 상태 전환입니다.");
+    expect(() => advanceOrder(delivered)).toThrow("더 이상 진행할 수 없는 주문 상태입니다.");
+  });
+
   it("기간·상태·거래처 기준으로 주문을 필터링한다", () => {
     const first = createMifOrder({ orders: [], cart: addToCart([], product), address, deliveryMethod: "courier", bankAccountId, companyName: "MIF 거래처" });
     const second = { ...first, id: "ord_2", orderNumber: "MIF-20260818-0002", status: "PAID" as const, createdAt: "2026-08-18T00:00:00.000Z" };
