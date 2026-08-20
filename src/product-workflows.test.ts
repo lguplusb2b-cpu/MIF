@@ -7,6 +7,7 @@ import {
   getProductSaveError,
   getProductSaveErrors,
   saveProduct,
+  shouldInitializeProductSheet,
   sortProductsForListing,
 } from "./product-workflows";
 
@@ -29,6 +30,14 @@ const createProduct = (): Product => ({
 });
 
 describe("상품 등록 업무 규칙", () => {
+  it("같은 상품 시트가 열린 동안 서버 동기화가 작성 중인 값을 초기화하지 않는다", () => {
+    expect(shouldInitializeProductSheet(false, null)).toBe(false);
+    expect(shouldInitializeProductSheet(true, null)).toBe(true);
+    expect(shouldInitializeProductSheet(true, "new-product")).toBe(false);
+    expect(shouldInitializeProductSheet(true, "prd-1", "prd-1")).toBe(false);
+    expect(shouldInitializeProductSheet(true, "prd-1", "prd-2")).toBe(true);
+  });
+
   it("필수 항목과 가격·최소 주문 수량을 검증한다", () => {
     const data = createPreviewMifData();
     expect(getProductSaveError({ ...createProduct(), name: "" }, data.categories)).toBe(

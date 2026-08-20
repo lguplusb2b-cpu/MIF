@@ -76,6 +76,35 @@ describe("서버 스냅샷 동기화 규칙", () => {
     expect(Object.keys(sync)).not.toContain("syncedAt");
   });
 
+  it("서버의 판매 상태·보관 상태를 상품 목록으로 그대로 동기화한다", () => {
+    const inactiveSnapshot = {
+      ...snapshot,
+      products: [
+        {
+          id: "prd-inactive",
+          name: "판매중지 상품",
+          categoryId: "cat-1",
+          categoryName: "가공식품",
+          spec: "1박스",
+          unit: "박스",
+          basePrice: 12000,
+          minOrderQty: 2,
+          stockStatus: "out_of_stock",
+          isActive: false,
+          storageType: "frozen",
+          detailImageKeys: [],
+          marketingBadges: ["품절임박"],
+          createdAt: "2026-08-19T04:00:00.000Z",
+        },
+      ],
+    } as unknown as MifServerSnapshot;
+
+    const [product] = mergeServerSnapshot(emptyMifData, inactiveSnapshot).products;
+    expect(product.isActive).toBe(false);
+    expect(product.storageType).toBe("frozen");
+    expect(product.badges).toEqual(["품절임박"]);
+  });
+
   it("서버 연동 상태를 사용자 표시 문구로 구분한다", () => {
     expect(describeSyncState({ configured: false, online: false })).toEqual({
       label: "로컬 모드",

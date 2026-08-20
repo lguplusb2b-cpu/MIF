@@ -116,6 +116,7 @@ import {
   getProductSaveErrors,
   PRODUCT_SORT_OPTIONS,
   saveProduct,
+  shouldInitializeProductSheet,
   sortProductsForListing,
   type ProductSortOption,
 } from "./src/product-workflows";
@@ -1765,6 +1766,9 @@ function MifApp() {
               imageKey: product.imageUri,
               detailImageKeys: product.detailImageUris,
               marketingBadges: product.badges,
+              isActive: product.isActive !== false,
+              storageType: product.storageType ?? "room_temp",
+              featuredPriority: product.featuredPriority,
             };
             await runServerFirst(
               () =>
@@ -1775,6 +1779,11 @@ function MifApp() {
             );
             setEditingProduct(undefined);
             setSheet(null);
+            showFeedback(
+              exists ? "상품 수정 완료" : "상품 등록 완료",
+              "저장한 상품 정보를 서버에 반영했습니다.",
+              "success",
+            );
           } catch (error) {
             showFeedback(
               "상품 저장",
@@ -5191,29 +5200,48 @@ function ProductSheet({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [adminPreview, setAdminPreview] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  /** 같은 상품 시트를 열어 둔 동안 서버 스냅샷 갱신으로 작성 중인 값을 덮어쓰지 않는다. */
+  const initializedProductKeyRef = useRef<string | null>(null);
   const visibleCategories = categories.filter((item) => item.isActive);
   useEffect(() => {
-    if (visible) {
-      const defaultCategory = categories.find((item) => item.isActive);
-      setName(product?.name ?? "");
-      setCategoryId(product?.categoryId ?? defaultCategory?.id ?? "");
-      setCategoryName(product?.categoryName ?? defaultCategory?.name ?? "");
-      setSpec(product?.spec ?? "");
-      setUnit(product?.unit ?? "개");
-      setPrice(product ? String(product.basePrice) : "");
-      setMinQty(product ? String(product.minOrderQty) : "1");
-      setDescription(product?.description ?? "");
-      setStockStatus(product?.stockStatus ?? "in_stock");
-      setIsActive(product?.isActive !== false);
-      setStorageType(product?.storageType ?? "room_temp");
-      setImageUri(product?.imageUri ?? "");
-      setDetailImageUris(product?.detailImageUris ?? []);
-      setBadges(product?.badges ?? []);
-      setFieldErrors({});
-      setDeleteConfirmVisible(false);
-      setAdminPreview(false);
+    if (!visible) {
+      initializedProductKeyRef.current = null;
+      return;
     }
-  }, [visible, product, categories]);
+    const productKey = product?.id ?? "new-product";
+    if (
+      !shouldInitializeProductSheet(
+        visible,
+        initializedProductKeyRef.current,
+        product?.id,
+      )
+    )
+      return;
+
+    const defaultCategory = categories.find((item) => item.isActive);
+    setName(product?.name ?? "");
+    setCategoryId(product?.categoryId ?? defaultCategory?.id ?? "");
+    setCategoryName(product?.categoryName ?? defaultCategory?.name ?? "");
+    setSpec(product?.spec ?? "");
+    setUnit(product?.unit ?? "개");
+    setPrice(product ? String(product.basePrice) : "");
+    setMinQty(product ? String(product.minOrderQty) : "1");
+    setDescription(product?.description ?? "");
+    setStockStatus(product?.stockStatus ?? "in_stock");
+    setIsActive(product?.isActive !== false);
+    setStorageType(product?.storageType ?? "room_temp");
+    setImageUri(product?.imageUri ?? "");
+    setDetailImageUris(product?.detailImageUris ?? []);
+    setBadges(product?.badges ?? []);
+    setFieldErrors({});
+    setDeleteConfirmVisible(false);
+    setAdminPreview(false);
+    setIsSaving(false);
+    setIsDeleting(false);
+    initializedProductKeyRef.current = productKey;
+  }, [visible, product?.id]);
   const pickMainImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
@@ -5284,7 +5312,21 @@ function ProductSheet({
       return;
     }
     setFieldErrors({});
-    await onSave(nextProduct);
+    setIsSaving(true);
+    try {
+      await onSave(nextProduct);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  const confirmDelete = async () => {
+    if (!product || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      await onDelete(product.id);
+    } finally {
+      setIsDeleting(false);
+    }
   };
   if (!visible) return null;
   return (
@@ -5513,13 +5555,20 @@ function ProductSheet({
               ),
             )}
           </View>
-          <Primary text="저장" onPress={save} />
+          <Primary
+            text={isSaving ? "저장 중..." : "저장"}
+            onPress={save}
+            disabled={isSaving || isDeleting}
+          />
           {product ? (
             <Pressable
-              style={styles.deleteProductButton}
+              style={[styles.deleteProductButton, isSaving && styles.buttonDisabled]}
+              disabled={isSaving || isDeleting}
               onPress={() => setDeleteConfirmVisible(true)}
             >
-              <Text style={styles.deleteProductText}>상품 삭제</Text>
+              <Text style={styles.deleteProductText}>
+                {isDeleting ? "삭제 중..." : "상품 삭제"}
+              </Text>
             </Pressable>
           ) : null}
           <Modal
@@ -5542,10 +5591,13 @@ function ProductSheet({
                     <Text style={styles.confirmCancelText}>취소</Text>
                   </Pressable>
                   <Pressable
-                    style={styles.confirmDelete}
-                    onPress={() => product && void onDelete(product.id)}
+                    style={[styles.confirmDelete, isDeleting && styles.buttonDisabled]}
+                    disabled={isDeleting}
+                    onPress={() => void confirmDelete()}
                   >
-                    <Text style={styles.confirmDeleteText}>삭제</Text>
+                    <Text style={styles.confirmDeleteText}>
+                      {isDeleting ? "삭제 중..." : "삭제"}
+                    </Text>
                   </Pressable>
                 </View>
               </View>

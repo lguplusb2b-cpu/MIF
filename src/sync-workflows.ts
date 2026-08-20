@@ -12,6 +12,12 @@ import type {
 export function toAppProduct(row: Record<string, unknown>): Product {
   const badges = Array.isArray(row.marketingBadges) ? (row.marketingBadges as Product["badges"]) : [];
   const detailImages = Array.isArray(row.detailImageKeys) ? (row.detailImageKeys as string[]) : [];
+  const storageType =
+    row.storageType === "refrigerated" ||
+    row.storageType === "frozen" ||
+    row.storageType === "room_temp"
+      ? row.storageType
+      : "room_temp";
   return {
     id: String(row.id),
     name: String(row.name ?? ""),
@@ -22,7 +28,13 @@ export function toAppProduct(row: Record<string, unknown>): Product {
     basePrice: Number(row.basePrice ?? 0),
     minOrderQty: Number(row.minOrderQty ?? 1),
     stockStatus: row.stockStatus === "out_of_stock" ? "out_of_stock" : "in_stock",
-    isActive: row.status ? row.status === "active" : true,
+    isActive:
+      typeof row.isActive === "boolean"
+        ? row.isActive
+        : row.status
+          ? row.status === "active"
+          : true,
+    storageType,
     description: String(row.description ?? ""),
     imageUri: row.imageKey ? String(row.imageKey) : undefined,
     detailImageUris: detailImages,
@@ -39,7 +51,7 @@ export function toAppCategory(row: Record<string, unknown>, fallback?: Category)
     name: String(row.name ?? ""),
     icon: fallback?.icon ?? "",
     sortOrder: Number(row.sortOrder ?? 0),
-    isActive: fallback?.isActive ?? true,
+    isActive: typeof row.isActive === "boolean" ? row.isActive : (fallback?.isActive ?? true),
   };
 }
 

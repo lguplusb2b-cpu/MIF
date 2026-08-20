@@ -12,6 +12,16 @@ export type ProductSaveField =
   | "minOrderQty"
   | "detailImages";
 
+/** 같은 상품 시트가 열린 동안에는 서버 스냅샷 갱신으로 작성 중인 값을 다시 초기화하지 않는다. */
+export function shouldInitializeProductSheet(
+  visible: boolean,
+  initializedProductKey: string | null,
+  productId?: string,
+): boolean {
+  if (!visible) return false;
+  return initializedProductKey !== (productId ?? "new-product");
+}
+
 export const PRODUCT_SORT_OPTIONS: ReadonlyArray<{
   id: ProductSortOption;
   label: string;
