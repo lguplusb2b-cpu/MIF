@@ -321,6 +321,13 @@ function MifApp() {
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [toasts, setToasts] = useState<MifToast[]>([]);
   const toastSequenceRef = useRef(0);
+  const pushUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
+  const [pushAccessState, setPushAccessState] = useState<
+    "idle" | "requesting" | "granted" | "denied" | "unsupported" | "error"
+  >("idle");
+  const [pushAccessMessage, setPushAccessMessage] = useState(
+    "알림 권한을 허용하면 주문 상태 변경을 받을 수 있습니다.",
+  );
   const [syncedAt, setSyncedAt] = useState<string | undefined>();
   const [serverOnline, setServerOnline] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -623,41 +630,69 @@ function MifApp() {
     };
   }, [session]);
 
+  const requestAndRegisterPush = async (manual = false) => {
+    if (!serverMode || !session) {
+      setPushAccessState("error");
+      setPushAccessMessage("서버 로그인 후 푸시 알림을 설정할 수 있습니다.");
+      notifyWarning("푸시 알림", "서버 로그인 후 다시 시도해 주세요.");
+      return false;
+    }
+    if (manual && pushAccessState === "denied") {
+      try {
+        await Linking.openSettings();
+        setPushAccessMessage("기기 설정에서 알림을 허용한 뒤 앱으로 돌아와 다시 눌러 주세요.");
+      } catch {
+        setPushAccessMessage("기기 설정에서 MIF 알림을 허용해 주세요.");
+      }
+      return false;
+    }
+    setPushAccessState("requesting");
+    setPushAccessMessage("푸시 알림 권한과 기기 등록을 확인하고 있습니다.");
+    const permission = await requestMifPushPermission();
+    if (permission.status === "unsupported") {
+      setPushAccessState("unsupported");
+      setPushAccessMessage(permission.message);
+      if (manual) notifyWarning("푸시 알림", permission.message);
+      return false;
+    }
+    if (permission.status !== "granted" || !permission.token) {
+      setPushAccessState(permission.status === "denied" ? "denied" : "error");
+      setPushAccessMessage(permission.message);
+      if (manual) notifyWarning("푸시 알림", permission.message);
+      return false;
+    }
+    try {
+      await mifApi.registerPushToken(permission.token, Platform.OS);
+      pushUnsubscribeRef.current?.();
+      pushUnsubscribeRef.current = await subscribeMifPush(
+        () => {
+          void syncFromServer({ silent: true });
+          notify("주문 상태 알림", "주문 상태가 변경되어 최신 정보를 동기화했습니다.");
+        },
+        (payload) => {
+          void syncFromServer({ silent: true });
+          if (payload.orderId) goToPage("orders");
+        },
+      );
+      setPushAccessState("granted");
+      setPushAccessMessage("알림 권한이 허용됐고 이 기기가 등록되었습니다.");
+      if (manual) notifySuccess("푸시 알림 설정", "이 기기에서 주문 상태 알림을 받을 수 있습니다.");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "푸시 알림을 등록하지 못했습니다.";
+      setPushAccessState("error");
+      setPushAccessMessage(message);
+      if (manual) notifyWarning("푸시 알림 등록", message);
+      return false;
+    }
+  };
+
   useEffect(() => {
     if (!serverMode || !session) return;
-    let disposed = false;
-    let unsubscribe: (() => void) | undefined;
-    const registerDevicePush = async () => {
-      const permission = await requestMifPushPermission();
-      if (disposed || permission.status === "unsupported") return;
-      if (permission.status !== "granted" || !permission.token) {
-        notifyWarning("푸시 알림", permission.message);
-        return;
-      }
-      try {
-        await mifApi.registerPushToken(permission.token, Platform.OS);
-        unsubscribe = await subscribeMifPush(
-          () => {
-            void syncFromServer({ silent: true });
-            notify("주문 상태 알림", "주문 상태가 변경되어 최신 정보를 동기화했습니다.");
-          },
-          (payload) => {
-            void syncFromServer({ silent: true });
-            if (payload.orderId) goToPage("orders");
-          },
-        );
-      } catch (error) {
-        if (!disposed)
-          notifyWarning(
-            "푸시 알림 등록",
-            error instanceof Error ? error.message : "푸시 알림을 등록하지 못했습니다.",
-          );
-      }
-    };
-    void registerDevicePush();
+    void requestAndRegisterPush();
     return () => {
-      disposed = true;
-      unsubscribe?.();
+      pushUnsubscribeRef.current?.();
+      pushUnsubscribeRef.current = undefined;
     };
   }, [serverMode, session?.id]);
   const addProductToCart = (product: Product) => {
@@ -1210,7 +1245,13 @@ function MifApp() {
           />
         )}
         {page === "appInfo" && (
-          <AppInfoPage onBack={goBack} onClose={goBack} />
+          <AppInfoPage
+            onBack={goBack}
+            onClose={goBack}
+            pushAccessState={pushAccessState}
+            pushAccessMessage={pushAccessMessage}
+            onRequestPush={() => void requestAndRegisterPush(true)}
+          />
         )}
         {page === "addresses" && (
           <AddressesPage
@@ -3575,7 +3616,19 @@ function ProfilePage({
   );
 }
 
-function AppInfoPage({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+function AppInfoPage({
+  onBack,
+  onClose,
+  pushAccessState,
+  pushAccessMessage,
+  onRequestPush,
+}: {
+  onBack: () => void;
+  onClose: () => void;
+  pushAccessState: "idle" | "requesting" | "granted" | "denied" | "unsupported" | "error";
+  pushAccessMessage: string;
+  onRequestPush: () => void;
+}) {
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <BackHeader title="앱 정보" onBack={onBack} onClose={onClose} />
@@ -3593,12 +3646,35 @@ function AppInfoPage({ onBack, onClose }: { onBack: () => void; onClose: () => v
           copy="운영 데이터는 MIF 전용 API·DB·파일 저장소에서 분리 관리합니다."
           onPress={() => undefined}
         />
-        <MenuRow
-          icon="notifications-outline"
-          title="푸시 알림"
-          copy="설치된 앱에서 권한을 허용하면 주문·문의·심사 상태를 수신합니다."
-          onPress={() => undefined}
-        />
+        <View style={styles.pushPermissionCard}>
+          <View style={styles.pushPermissionHeader}>
+            {icon("notifications-outline", palette.teal, 20)}
+            <View style={styles.pushPermissionCopy}>
+              <Text style={styles.strong}>푸시 알림</Text>
+              <Text style={styles.helper}>{pushAccessMessage}</Text>
+            </View>
+          </View>
+          <Pressable
+            accessibilityLabel="푸시 알림 권한 허용 및 기기 등록"
+            disabled={pushAccessState === "requesting" || pushAccessState === "unsupported"}
+            onPress={onRequestPush}
+            style={[
+              styles.primaryButton,
+              styles.pushPermissionButton,
+              (pushAccessState === "requesting" || pushAccessState === "unsupported") && styles.primaryButtonDisabled,
+            ]}
+          >
+            <Text style={styles.primaryText}>
+              {pushAccessState === "granted"
+                ? "알림 설정 다시 확인"
+                : pushAccessState === "denied"
+                  ? "기기 설정에서 알림 허용"
+                  : pushAccessState === "requesting"
+                    ? "권한 확인 중"
+                    : "푸시 알림 권한 허용"}
+            </Text>
+          </Pressable>
+        </View>
       </MenuGroup>
       <Text style={styles.helper}>
         MIF는 전용 API·DB·파일 저장소를 사용하며 거래처와 주문 데이터는 독립적으로 관리합니다.
